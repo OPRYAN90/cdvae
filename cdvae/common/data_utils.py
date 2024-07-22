@@ -248,7 +248,7 @@ def frac_to_cart_coords(
     angles,
     num_atoms,
 ):
-    lattice = lattice_params_to_matrix_torch(lengths, angles)
+    lattice = lattice_params_to_matrix_torch(lengths, angles) #lattice matrix
     lattice_nodes = torch.repeat_interleave(lattice, num_atoms, dim=0)
     pos = torch.einsum('bi,bij->bj', frac_coords, lattice_nodes)  # cart coords
 
@@ -293,7 +293,7 @@ def get_pbc_distances(
 
     distance_vectors = pos[j_index] - pos[i_index]
 
-    # correct for pbc
+    # correct for pbc; added comment: if we change the distance vectors we need to account for offsets
     lattice_edges = torch.repeat_interleave(lattice, num_bonds, dim=0)
     offsets = torch.einsum('bi,bij->bj', to_jimages.float(), lattice_edges)
     distance_vectors += offsets
@@ -302,7 +302,7 @@ def get_pbc_distances(
     distances = distance_vectors.norm(dim=-1)
 
     out = {
-        "edge_index": edge_index,
+        "edge_index": edge_index, #edge index stays the same
         "distances": distances,
     }
 

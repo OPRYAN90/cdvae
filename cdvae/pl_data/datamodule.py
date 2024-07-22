@@ -82,8 +82,8 @@ class CrystDataModule(pl.LightningDataModule):
                 for dataset_cfg in self.datasets.val
             ]
 
-            self.train_dataset.lattice_scaler = self.lattice_scaler
-            self.train_dataset.scaler = self.scaler
+            self.train_dataset.lattice_scaler = self.lattice_scaler #normalization
+            self.train_dataset.scaler = self.scaler #normalization 
             for val_dataset in self.val_datasets:
                 val_dataset.lattice_scaler = self.lattice_scaler
                 val_dataset.scaler = self.scaler

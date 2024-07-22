@@ -4,7 +4,7 @@
 import torch
 import torch.nn as nn
 from torch_scatter import scatter
-from torch_geometric.nn.acts import swish
+from torch.nn.functional import silu
 from torch_geometric.nn.inits import glorot_orthogonal
 from torch_geometric.nn.models.dimenet import (
     BesselBasisLayer,
@@ -37,7 +37,7 @@ class InteractionPPBlock(torch.nn.Module):
         num_radial,
         num_before_skip,
         num_after_skip,
-        act=swish,
+        act=silu,
     ):
         super(InteractionPPBlock, self).__init__()
         self.act = act
@@ -136,7 +136,7 @@ class OutputPPBlock(torch.nn.Module):
         out_emb_channels,
         out_channels,
         num_layers,
-        act=swish,
+        act=silu,
     ):
         super(OutputPPBlock, self).__init__()
         self.act = act
@@ -209,7 +209,7 @@ class DimeNetPlusPlus(torch.nn.Module):
         num_before_skip=1,
         num_after_skip=2,
         num_output_layers=3,
-        act=swish,
+        act=silu,
     ):
         super(DimeNetPlusPlus, self).__init__()
 
@@ -371,7 +371,7 @@ class DimeNetPlusPlusWrap(DimeNetPlusPlus):
         edge_index = out["edge_index"]
         dist = out["distances"]
         offsets = out["offsets"]
-
+        #all data is in cartesian (not fractional)
         j, i = edge_index
 
         _, _, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
@@ -390,8 +390,8 @@ class DimeNetPlusPlusWrap(DimeNetPlusPlus):
         b = torch.cross(pos_ji, pos_kj).norm(dim=-1)
         angle = torch.atan2(b, a)
 
-        rbf = self.rbf(dist)
-        sbf = self.sbf(dist, angle, idx_kj)
+        rbf = self.rbf(dist) #basel function to better represent distancesr
+        sbf = self.sbf(dist, angle, idx_kj) #function to better represent spacial composition
 
         # Embedding block.
         x = self.emb(data.atom_types.long(), rbf, i, j)
