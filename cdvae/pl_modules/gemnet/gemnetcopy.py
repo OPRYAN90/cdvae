@@ -19,7 +19,7 @@ from cdvae.common.data_utils import (
 from .layers.atom_update_block import OutputBlock
 from .layers.base_layers import Dense
 from .layers.efficient import EfficientInteractionDownProjection
-from .layers.embedding_block import LatentAtomEmbedding, EdgeEmbedding, AtomEmbedding
+from .layers.embedding_block import AtomEmbedding, EdgeEmbedding
 from .layers.interaction_block import (
     InteractionBlockTripletsOnly,
 )
@@ -190,7 +190,7 @@ class GemNetT(torch.nn.Module):
         ### ------------------------------------------------------------------------------------- ###
 
         # Embedding block
-        self.atom_emb = LatentAtomEmbedding(emb_size_atom)
+        self.atom_emb = AtomEmbedding(emb_size_atom)
         self.atom_latent_emb = nn.Linear(emb_size_atom + latent_dim, emb_size_atom)
         self.edge_emb = EdgeEmbedding(
             emb_size_atom, num_radial, emb_size_edge, activation=activation
@@ -513,7 +513,7 @@ class GemNetT(torch.nn.Module):
         batch = torch.arange(num_atoms.size(0),
                              device=num_atoms.device).repeat_interleave(
                                  num_atoms, dim=0)
-        # atomic_numbers = atom_types #warning atom emb
+        atomic_numbers = atom_types #warning atom emb
 
         (
             edge_index,
@@ -536,10 +536,9 @@ class GemNetT(torch.nn.Module):
         rbf = self.radial_basis(D_st)
 
         # Embedding block
-        h = self.atom_emb(atom_types)
-        # h = atom_types
+        h = self.atom_emb(atomic_numbers)
         # Merge z and atom embedding
-        if z is not None: #look
+        if z is not None:
             z_per_atom = z.repeat_interleave(num_atoms, dim=0)
             h = torch.cat([h, z_per_atom], dim=1)
             h = self.atom_latent_emb(h)
@@ -571,7 +570,7 @@ class GemNetT(torch.nn.Module):
                 idx_t=idx_t,
             )  # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
 
-            E, F = self.out_blocks[i + 1](h, m, rbf_out, idx_t) #look here to possibly change output for pred_len within model if tested
+            E, F = self.out_blocks[i + 1](h, m, rbf_out, idx_t)
             # (nAtoms, num_targets), (nEdges, num_targets)
             F_st += F
             E_t += E

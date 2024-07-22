@@ -12,7 +12,13 @@ from .base_layers import Dense
 
 from cdvae.pl_modules.embeddings import MAX_ATOMIC_NUM
 
-
+class LatentAtomEmbedding(torch.nn.Module):
+    def __init__(self, emb_size):
+        super().__init__()
+        self.emb_size = emb_size
+        self.embeddings = torch.nn.Linear(64, emb_size)
+    def forward(self, x):
+        return self.embeddings(x)
 class AtomEmbedding(torch.nn.Module):
     """
     Initial atom embeddings based on the atom type
@@ -28,13 +34,13 @@ class AtomEmbedding(torch.nn.Module):
         self.emb_size = emb_size
 
         # Atom embeddings: We go up to Bi (83).
-        self.embeddings = torch.nn.Embedding(MAX_ATOMIC_NUM, emb_size)
+        self.embeddings = torch.nn.Embedding(64, emb_size)
         # init by uniform distribution
         torch.nn.init.uniform_(
             self.embeddings.weight, a=-np.sqrt(3), b=np.sqrt(3)
         )
 
-    def forward(self, Z):
+    def forward(self, Z): #fix atom embedding or use cartesian prediction as latent
         """
         Returns
         -------
