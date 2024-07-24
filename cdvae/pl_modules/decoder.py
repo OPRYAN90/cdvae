@@ -66,14 +66,14 @@ class GemNetTDecoder(nn.Module):
             otf_graph=True,
             scale_file=scale_file,
         )
-        # self.fc_atom = nn.Linear(hidden_dim, MAX_ATOMIC_NUM)
+        self.fc_atom = build_mlp(hidden_dim, hidden_dim, 2, MAX_ATOMIC_NUM)
         # self.fc_lengths = nn.Linear(hidden_dim, 3)
         # self.fc_angles = nn.Linear(hidden_dim, 3)
         #other way:
-        self.fc_atom = build_mlp(latent_dim, latent_dim*2, 1, MAX_ATOMIC_NUM)
-        self.fc_lengths = build_mlp(latent_dim*20, latent_dim, 1, 3)
-        self.fc_angles = build_mlp(latent_dim*20, latent_dim, 1, 3)
-        self.fc_hidden = build_mlp(hidden_dim, latent_dim*2, 1, latent_dim)
+        # self.fc_atom = build_mlp(latent_dim, latent_dim*2, 1, MAX_ATOMIC_NUM)
+        # self.fc_lengths = build_mlp(latent_dim*20, latent_dim, 1, 3)
+        # self.fc_angles = build_mlp(latent_dim*20, latent_dim, 1, 3)
+        # self.fc_hidden = build_mlp(hidden_dim, latent_dim*2, 1, latent_dim)
         # self.len_attention = nn.MultiheadAttention(hidden_dim, num_heads=4)   
         # self.angles_attention = nn.MultiheadAttention(hidden_dim, num_heads=4)
     def forward(self, z, pred_frac_coords, pred_atom_types, num_atoms,
@@ -102,12 +102,12 @@ class GemNetTDecoder(nn.Module):
             to_jimages=None,
             num_bonds=None,
         ) 
-        insider = self.fc_hidden(h)
-        pred_atom_types = self.fc_atom(insider)
-        #split:
-        insider_split, mask = split_atoms(insider, num_atoms, self.latent_dim)
-        insider_view = insider_split.view(-1, self.latent_dim*20) #warning bsz
-        pred_lengths, pred_angles = self.fc_lengths(insider_view), self.fc_angles(insider_view)
+        pred_atom_types = self.fc_atom(h)
+        # pred_atom_types = self.fc_atom(insider)
+        # #split:
+        # insider_split, mask = split_atoms(insider, num_atoms, self.latent_dim)
+        # insider_view = insider_split.view(-1, self.latent_dim*20) #warning bsz
+        # pred_lengths, pred_angles = self.fc_lengths(insider_view), self.fc_angles(insider_view)
         # if transformer:
         # pred_lengths, pred_angles = self.len_attention(insider, insider, insider), self.angles_attention(insider, insider, insider)
-        return pred_cart_coords, pred_atom_types, pred_lengths, pred_angles
+        return pred_cart_coords, pred_atom_types
