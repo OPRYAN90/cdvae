@@ -126,10 +126,11 @@ def repeat_blocks(
     # Remove 0 sizes
     sizes_nonzero = sizes > 0
     if not torch.all(sizes_nonzero):
-        assert block_inc == 0  # Implementing this is not worth the effort
         sizes = torch.masked_select(sizes, sizes_nonzero)
         if isinstance(repeats, torch.Tensor):
             repeats = torch.masked_select(repeats, sizes_nonzero)
+        if isinstance(block_inc, torch.Tensor):
+            block_inc = torch.masked_select(block_inc, sizes_nonzero[:-1])
         if isinstance(repeat_inc, torch.Tensor):
             repeat_inc = torch.masked_select(repeat_inc, sizes_nonzero)
 
@@ -191,7 +192,10 @@ def repeat_blocks(
             insert_val[idx] = 1
 
         # Add block increments
-        insert_val[idx] += block_inc
+        if isinstance(block_inc, torch.Tensor):
+            insert_val[idx] += block_inc
+        else:
+            insert_val[idx] += block_inc
 
     # Add repeat_inc within each group
     if isinstance(repeat_inc, torch.Tensor):
@@ -225,6 +229,7 @@ def repeat_blocks(
     # Finally index into input array for the group repeated o/p
     res = id_ar.cumsum(0)
     return res
+
 
 
 def calculate_interatomic_vectors(R, id_s, id_t, offsets_st):

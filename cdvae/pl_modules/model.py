@@ -378,13 +378,13 @@ class CDVAE(BaseModule):
         # noisy_frac_coords = cart_to_frac_coords(
         #     cart_coords, pred_lengths, pred_angles, batch.num_atoms)
 
-        pred_cart, pred_atom_types, pred_lengths, pred_angles = self.decoder(z=None,pred_frac_coords=z_x, pred_atom_types=z_a, num_atoms=batch.num_atoms, lengths=z_l, angles=z_ang)
-        pred_fractional = cart_to_frac_coords(pred_cart, pred_lengths, pred_angles, batch.num_atoms)
+        pred_cart, pred_atom_types = self.decoder(z=None,pred_frac_coords=z_x, pred_atom_types=z_a, num_atoms=batch.num_atoms, lengths=z_l, angles=z_ang)
+        # pred_fractional = cart_to_frac_coords(pred_cart, z_l, z_ang, batch.num_atoms)
         # compute loss.
         num_atom_loss = self.num_atom_loss(pred_num_atoms, batch) #number of atoms in material
         lattice_loss = self.lattice_loss(z_pred_lengths_and_angles, batch) #lattice of matieral
         # composition_loss = self.composition_loss(pred_composition_per_atom, batch.atom_types, batch) #compisition of atoms in material
-        coord_loss = self.vae_coord_loss(pred_fractional, pred_cart, batch) #denoising loss
+        coord_loss = self.vae_coord_loss(pred_cart, batch) #denoising loss
         type_loss = self.vae_type_loss(pred_atom_types, batch) #types of atoms in material
 
         kld_loss_a = self.kld_loss(z_a, z_a_logvar)
@@ -407,9 +407,9 @@ class CDVAE(BaseModule):
             'property_loss': property_loss,
             'pred_num_atoms': pred_num_atoms,
             'pred_lengths_and_angles': z_pred_lengths_and_angles,
-            'pred_lengths': pred_lengths,
-            'pred_angles': pred_angles,
-            'pred_frac': pred_fractional,
+            'pred_lengths': z_l,
+            'pred_angles': z_ang,
+            'pred_cart': pred_cart,
             'pred_atom_types': pred_atom_types,
             # 'pred_composition_per_atom': pred_composition_per_atom,
             'target_frac_coords': batch.frac_coords,
@@ -555,9 +555,9 @@ class CDVAE(BaseModule):
         loss_per_atom = 0.5 * loss_per_atom * used_sigmas_per_atom**2
         return scatter(loss_per_atom, batch.batch, reduce='mean').mean()
 
-    def vae_coord_loss(self, pred_frac, pred_cart, batch):
-        target_frac = batch.frac_coords
-        loss = F.mse_loss(pred_frac, target_frac, reduction='none')
+    def vae_coord_loss(self, pred_cart, batch):
+        target_cart_coords = frac_to_cart_coords(batch.frac_coords, batch.lengths, batch.angles, batch.num_atoms)
+        loss = F.mse_loss(pred_cart, target_cart_coords, reduction='none')
         return loss.mean()
     def type_loss(self, pred_atom_types, target_atom_types,
                   used_type_sigmas_per_atom, batch):
