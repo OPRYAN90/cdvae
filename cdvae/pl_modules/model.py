@@ -334,6 +334,7 @@ class CDVAE(BaseModule):
     def forward(self, batch, teacher_forcing, training):
         # hacky way to resolve the NaN issue. Will need more careful debugging later.
         # mu, log_var, z = self.encode(batch)
+        print(batch.num_atoms)
         hidden = self.encoder(batch)
         # (pred_num_atoms, pred_lengths_and_angles, pred_lengths, pred_angles,
         #  pred_composition_per_atom) = self.decode_stats(
@@ -377,7 +378,7 @@ class CDVAE(BaseModule):
         # cart_coords = cart_coords + cart_noises_per_atom
         # noisy_frac_coords = cart_to_frac_coords(
         #     cart_coords, pred_lengths, pred_angles, batch.num_atoms)
-
+        print(f"z_x: {z_x}z_a: {z_a} z_l: {z_l} z_ang: {z_ang} num_atoms: {batch.num_atoms}")
         pred_cart, pred_atom_types = self.decoder(z=None,pred_frac_coords=z_x, pred_atom_types=z_a, num_atoms=batch.num_atoms, lengths=z_l, angles=z_ang)
         # pred_fractional = cart_to_frac_coords(pred_cart, z_l, z_ang, batch.num_atoms)
         # compute loss.

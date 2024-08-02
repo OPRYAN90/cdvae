@@ -16,9 +16,12 @@ class LatentAtomEmbedding(torch.nn.Module):
     def __init__(self, emb_size):
         super().__init__()
         self.emb_size = emb_size
-        self.embeddings = torch.nn.Linear(64, emb_size)
+        self.embeddingss = torch.nn.Linear(64, emb_size)
+        torch.nn.init.uniform_(
+            self.embeddingss.weight, a=-np.sqrt(3), b=np.sqrt(3)
+        )
     def forward(self, x):
-        return self.embeddings(x)
+        return self.embeddingss(x)
 class AtomEmbedding(torch.nn.Module):
     """
     Initial atom embeddings based on the atom type
