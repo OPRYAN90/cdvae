@@ -111,7 +111,7 @@ optim:
     patience: 30
     min_lr: 0.0001
 train:
-  deterministic: false
+  deterministic: true
   random_seed: 42
   pl_trainer:
     fast_dev_run: false

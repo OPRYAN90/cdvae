@@ -471,6 +471,7 @@ class GemNetT(torch.nn.Module):
 
         # Indices for swapping c->a and a->c (for symmetric MP)
         block_sizes = neighbors // 2
+        print(f"Block sizes: {block_sizes}")
         id_swap = repeat_blocks(
             block_sizes,
             repeats=2,
@@ -515,6 +516,29 @@ class GemNetT(torch.nn.Module):
                                  num_atoms, dim=0)
         # atomic_numbers = atom_types #warning atom emb
 
+        torch.set_printoptions(threshold=999999999999999999999999)  # Adjust the threshold as needed
+        num_rows = pos.size(0)
+
+        # Calculate the indices to split the tensor into 15 parts
+        split_size = num_rows // 15
+        remainder = num_rows % 15
+
+        # Split the tensor into 15 parts
+        parts = [pos[i*split_size:(i+1)*split_size] for i in range(15)]
+
+        # If there is a remainder, add the remaining rows to the last part
+        if remainder > 0:
+            parts[-1] = torch.cat((parts[-1], pos[15*split_size:]), dim=0)
+
+        # Print each part separately
+        for i, part in enumerate(parts):
+            print(f"Part {i+1} of pos:", part)
+        print("lengths:", lengths)
+        print("angles:", angles)
+        print("num_atoms:", num_atoms)
+        print("edge_index:", edge_index)
+        print("to_jimages:", to_jimages)
+        print("num_bonds:", num_bonds)
         (
             edge_index,
             neighbors,

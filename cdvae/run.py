@@ -15,7 +15,6 @@ from pytorch_lightning.callbacks import (
     ModelCheckpoint,
 )
 from pytorch_lightning.loggers import WandbLogger
-
 from cdvae.common.utils import log_hyperparameters, PROJECT_ROOT
 
 

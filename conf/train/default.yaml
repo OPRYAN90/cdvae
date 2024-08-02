@@ -1,5 +1,5 @@
 # reproducibility
-deterministic: False
+deterministic: True
 random_seed: 42
 
 # training
@@ -16,7 +16,7 @@ pl_trainer:
   gradient_clip_algorithm: value
   profiler: simple
 
-monitor_metric: 'val_loss'
+monitor_metric: 'train_loss'
 monitor_metric_mode: 'min'
 
 early_stopping:
