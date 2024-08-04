@@ -101,7 +101,9 @@ class GemNetTDecoder(nn.Module):
             edge_index=None,
             to_jimages=None,
             num_bonds=None,
-        ) 
+        )
+        if h is None and pred_cart_coords is None:
+            return None, None
         pred_atom_types = self.fc_atom(h)
         # pred_atom_types = self.fc_atom(insider)
         # #split:
