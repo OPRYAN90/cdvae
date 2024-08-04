@@ -334,7 +334,7 @@ class CDVAE(BaseModule):
     def forward(self, batch, teacher_forcing, training):
         # hacky way to resolve the NaN issue. Will need more careful debugging later.
         # mu, log_var, z = self.encode(batch)
-        print(batch.num_atoms)
+        # print(batch.num_atoms)
         hidden = self.encoder(batch)
         # (pred_num_atoms, pred_lengths_and_angles, pred_lengths, pred_angles,
         #  pred_composition_per_atom) = self.decode_stats(
@@ -344,8 +344,8 @@ class CDVAE(BaseModule):
         z_ang = self.reparameterize(z_ang_mu, z_ang_logvar)
         z_a = self.reparameterize(z_a_mu, z_a_logvar)
         z_x = self.reparameterize(z_x_mu, z_x_logvar)
-        z_pred_lengths_and_angles = torch.cat([z_l, z_ang], dim=1)
-        z_pred_lengths_and_angles = self.lattice_scaler.inverse_transform(z_pred_lengths_and_angles) #scaled
+        z_pred_lengths_and_angles_original = torch.cat([z_l, z_ang], dim=1)
+        z_pred_lengths_and_angles = self.lattice_scaler.inverse_transform(z_pred_lengths_and_angles_original) #scaled
         z_l, z_ang = z_pred_lengths_and_angles[:, :3], z_pred_lengths_and_angles[:, 3:]
         if self.hparams.data.lattice_scale_method == 'scale_length':
             z_l = z_l * batch.num_atoms.view(-1, 1).float()**(1/3)
@@ -378,12 +378,14 @@ class CDVAE(BaseModule):
         # cart_coords = cart_coords + cart_noises_per_atom
         # noisy_frac_coords = cart_to_frac_coords(
         #     cart_coords, pred_lengths, pred_angles, batch.num_atoms)
-        print(f"z_x: {z_x}z_a: {z_a} z_l: {z_l} z_ang: {z_ang} num_atoms: {batch.num_atoms}")
+        # print(f"z_x: {z_x}z_a: {z_a} z_l: {z_l} z_ang: {z_ang} num_atoms: {batch.num_atoms}")
         pred_cart, pred_atom_types = self.decoder(z=None,pred_frac_coords=z_x, pred_atom_types=z_a, num_atoms=batch.num_atoms, lengths=z_l, angles=z_ang)
+        if pred_cart is None and pred_atom_types is None:
+            return self.return_zeros()
         # pred_fractional = cart_to_frac_coords(pred_cart, z_l, z_ang, batch.num_atoms)
         # compute loss.
         num_atom_loss = self.num_atom_loss(pred_num_atoms, batch) #number of atoms in material
-        lattice_loss = self.lattice_loss(z_pred_lengths_and_angles, batch) #lattice of matieral
+        lattice_loss = self.lattice_loss(z_pred_lengths_and_angles_original, batch) #lattice of matieral
         # composition_loss = self.composition_loss(pred_composition_per_atom, batch.atom_types, batch) #compisition of atoms in material
         coord_loss = self.vae_coord_loss(pred_cart, batch) #denoising loss
         type_loss = self.vae_type_loss(pred_atom_types, batch) #types of atoms in material
@@ -609,7 +611,43 @@ class CDVAE(BaseModule):
             log_dict,
         )
         return loss
+    def return_zeros(self):
+        return {
+            'num_atom_loss': torch.tensor(0.0, requires_grad=True),
+            'lattice_loss': torch.tensor(0.0, requires_grad=True),
+            'coord_loss': torch.tensor(0.0, requires_grad=True),
+            'type_loss': torch.tensor(0.0, requires_grad=True),
+            'kld_loss': torch.tensor(0.0, requires_grad=True),
+            'property_loss': torch.tensor(0.0, requires_grad=True),
+            'pred_num_atoms': torch.tensor(0.0),
+            'pred_lengths_and_angles': torch.tensor(0.0),
+            'pred_lengths': torch.tensor(0.0),
+            'pred_angles': torch.tensor(0.0),
+            'pred_cart': torch.tensor(0.0),
+            'pred_atom_types': torch.tensor(0.0),
+            'target_frac_coords': torch.tensor(0.0),
+            'target_atom_types': torch.tensor(0.0),
+            'hidden': torch.tensor(0.0),
+        }
 
+    def dummies(self, log_dict, prefix):
+        loss = 1000
+        property_loss = 1000
+        num_atom_accuracy = 1000
+        lengths_mard = 1000
+        angles_mae = 1000
+        volumes_mard = 1000
+        type_accuracy = 1000
+        log_dict.update({
+            f'{prefix}_loss': loss,
+            f'{prefix}_property_loss': property_loss,
+            f'{prefix}_natom_accuracy': num_atom_accuracy,
+            f'{prefix}_lengths_mard': lengths_mard,
+            f'{prefix}_angles_mae': angles_mae,
+            f'{prefix}_volumes_mard': volumes_mard,
+            f'{prefix}_type_accuracy': type_accuracy,
+        })
+        return log_dict, loss
     def compute_stats(self, batch, outputs, prefix):
         num_atom_loss = outputs['num_atom_loss']
         lattice_loss = outputs['lattice_loss']
@@ -618,7 +656,6 @@ class CDVAE(BaseModule):
         kld_loss = outputs['kld_loss']
         # composition_loss = outputs['composition_loss']
         property_loss = outputs['property_loss']
-
         loss = (
             self.hparams.cost_natom * num_atom_loss +
             self.hparams.cost_lattice * lattice_loss +
@@ -651,6 +688,9 @@ class CDVAE(BaseModule):
 
             # evalute lattice prediction.
             pred_lengths_and_angles = outputs['pred_lengths_and_angles']
+            if pred_lengths_and_angles.shape == torch.Size([]):
+                print("Issues with batch so skipping val")
+                return self.dummies(log_dict, prefix)
             scaled_preds = self.lattice_scaler.inverse_transform(
                 pred_lengths_and_angles)
             pred_lengths = scaled_preds[:, :3]
