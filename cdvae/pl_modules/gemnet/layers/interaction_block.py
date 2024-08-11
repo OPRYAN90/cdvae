@@ -343,10 +343,10 @@ class TripletInteraction(torch.nn.Module):
 
         # Up project embeddings
         x_ca = self.up_projection_ca(x)  # (nEdges, emb_size_edge)
-        x_ac = self.up_projection_ac(x)  # (nEdges, emb_size_edge)
+        #x_ac = self.up_projection_ac(x)  # (nEdges, emb_size_edge)
 
         # Merge interaction of c->a and a->c
-        x_ac = x_ac[id_swap]  # swap to add to edge a->c and not c->a
-        x3 = x_ca + x_ac
+        # x_ac = x_ac[id_swap]  # swap to add to edge a->c and not c->a
+        x3 = x_ca #+ x_ac
         x3 = x3 * self.inv_sqrt_2
         return x3

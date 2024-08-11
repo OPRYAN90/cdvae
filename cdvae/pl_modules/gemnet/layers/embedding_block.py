@@ -11,17 +11,32 @@ import torch
 from .base_layers import Dense
 
 from cdvae.pl_modules.embeddings import MAX_ATOMIC_NUM
+import torch.nn as nn
+import torch
+import numpy as np
 
-class LatentAtomEmbedding(torch.nn.Module):
-    def __init__(self, emb_size):
-        super().__init__()
-        self.emb_size = emb_size
-        self.embeddingss = torch.nn.Linear(64, emb_size)
-        torch.nn.init.uniform_(
-            self.embeddingss.weight, a=-np.sqrt(3), b=np.sqrt(3)
-        )
-    def forward(self, x):
-        return self.embeddingss(x)
+def build_mlp_atom_emb(in_dim, hidden_dim, fc_num_layers, out_dim):
+    mods = []
+    
+    # Input layer
+    input_layer = nn.Linear(in_dim, hidden_dim)
+    torch.nn.init.uniform_(input_layer.weight, a=-np.sqrt(3), b=np.sqrt(3))
+    mods += [input_layer, nn.ReLU()]
+    
+    # Hidden layers
+    for i in range(fc_num_layers - 1):
+        hidden_layer = nn.Linear(hidden_dim, hidden_dim)
+        torch.nn.init.uniform_(hidden_layer.weight, a=-np.sqrt(3), b=np.sqrt(3))
+        mods += [hidden_layer, nn.ReLU()]
+    
+    # Output layer
+    output_layer = nn.Linear(hidden_dim, out_dim)
+    torch.nn.init.uniform_(output_layer.weight, a=-np.sqrt(3), b=np.sqrt(3))
+    mods.append(output_layer)
+    
+    return nn.Sequential(*mods)
+
+
 class AtomEmbedding(torch.nn.Module):
     """
     Initial atom embeddings based on the atom type

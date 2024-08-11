@@ -76,8 +76,7 @@ class GemNetTDecoder(nn.Module):
         # self.fc_hidden = build_mlp(hidden_dim, latent_dim*2, 1, latent_dim)
         # self.len_attention = nn.MultiheadAttention(hidden_dim, num_heads=4)   
         # self.angles_attention = nn.MultiheadAttention(hidden_dim, num_heads=4)
-    def forward(self, z, pred_frac_coords, pred_atom_types, num_atoms,
-                lengths, angles):
+    def forward(self, z, pred_frac_coords, pred_atom_types, num_atoms, lengths, angles, batch):
         """
         args:
             z: (N_cryst, num_latent)
@@ -90,21 +89,49 @@ class GemNetTDecoder(nn.Module):
             atom_frac_coords: (N_atoms, 3)
             atom_types: (N_atoms, MAX_ATOMIC_NUM)
         """
-        # (num_atoms, hidden_dim) (num_crysts, 3)
-        h, pred_cart_coords = self.gemnet(
-            z=z,
-            frac_coords=pred_frac_coords,
-            atom_types=pred_atom_types,
-            num_atoms=num_atoms,
-            lengths=lengths,
-            angles=angles,
-            edge_index=None,
-            to_jimages=None,
-            num_bonds=None,
-        )
-        if h is None and pred_cart_coords is None:
-            return None, None
-        pred_atom_types = self.fc_atom(h)
+        try:
+            # Attempt using predicted lengths and angles
+            h, pred_cart_coords = self.gemnet(
+                z=z,
+                frac_coords=pred_frac_coords,
+                atom_types=pred_atom_types,
+                num_atoms=num_atoms,
+                lengths=lengths,
+                angles=angles,
+                edge_index=None,
+                to_jimages=None,
+                num_bonds=None,
+            )
+            pred_atom_types = self.fc_atom(h)
+            return pred_cart_coords, pred_atom_types
+
+        except Exception as e:
+            print(f"Prediction error: {str(e)}. Attempting to use ground truth lengths and angles.")
+
+            try:
+                ground_truth_angles = batch.angles
+                ground_truth_lengths = batch.lengths
+                ground_truth_coords = batch.frac_coords #* .9+.1 *pred_frac_coords
+                # Attempt using ground truth lengths and angles
+                h, pred_cart_coords = self.gemnet(
+                    z=z,
+                    frac_coords=ground_truth_coords,
+                    atom_types=pred_atom_types,
+                    num_atoms=num_atoms,
+                    lengths=ground_truth_lengths,
+                    angles=ground_truth_angles,
+                    edge_index=None,
+                    to_jimages=None,
+                    num_bonds=None,
+                )
+                pred_atom_types = self.fc_atom(h)
+                return pred_cart_coords, pred_atom_types
+
+            except Exception as inner_e:
+                # If both attempts fail, log the error and skip the batch
+                print(f"Error in batch after fallback: {str(inner_e)}")
+                return None, None
+
         # pred_atom_types = self.fc_atom(insider)
         # #split:
         # insider_split, mask = split_atoms(insider, num_atoms, self.latent_dim)
@@ -112,4 +139,3 @@ class GemNetTDecoder(nn.Module):
         # pred_lengths, pred_angles = self.fc_lengths(insider_view), self.fc_angles(insider_view)
         # if transformer:
         # pred_lengths, pred_angles = self.len_attention(insider, insider, insider), self.angles_attention(insider, insider, insider)
-        return pred_cart_coords, pred_atom_types
