@@ -1,3 +1,11 @@
+import sys
+import os
+import distutils.version
+# Set the PYTHONPATH to the directory containing cdvae
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+os.environ['WANDB_API_KEY'] = '747d51be32c8cc7164898b64a6eb74be7f86269b'
+
+sys.modules['distutils.version'] = distutils.version
 from pathlib import Path
 from typing import List
 
@@ -16,7 +24,6 @@ from pytorch_lightning.callbacks import (
 )
 from pytorch_lightning.loggers import WandbLogger
 from cdvae.common.utils import log_hyperparameters, PROJECT_ROOT
-
 
 def build_callbacks(cfg: DictConfig) -> List[Callback]:
     callbacks: List[Callback] = []

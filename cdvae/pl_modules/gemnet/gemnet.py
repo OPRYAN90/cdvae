@@ -19,7 +19,7 @@ from cdvae.common.data_utils import (
 from .layers.atom_update_block import OutputBlock
 from .layers.base_layers import Dense
 from .layers.efficient import EfficientInteractionDownProjection
-from .layers.embedding_block import LatentAtomEmbedding, EdgeEmbedding, AtomEmbedding
+from .layers.embedding_block import EdgeEmbedding, AtomEmbedding
 from .layers.interaction_block import (
     InteractionBlockTripletsOnly,
 )
@@ -32,7 +32,12 @@ from .utils import (
     ragged_range,
     repeat_blocks,
 )
-
+def build_mlp(in_dim, hidden_dim, fc_num_layers, out_dim):
+    mods = [nn.Linear(in_dim, hidden_dim), nn.ReLU()]
+    for i in range(fc_num_layers-1):
+        mods += [nn.Linear(hidden_dim, hidden_dim), nn.ReLU()]
+    mods += [nn.Linear(hidden_dim, out_dim)]
+    return nn.Sequential(*mods)
 
 class GemNetT(torch.nn.Module):
     """
@@ -190,7 +195,7 @@ class GemNetT(torch.nn.Module):
         ### ------------------------------------------------------------------------------------- ###
 
         # Embedding block
-        self.atom_emb = LatentAtomEmbedding(emb_size_atom)
+        self.atom_emb = build_mlp(64, 420, 3, emb_size_atom)
         self.atom_latent_emb = nn.Linear(emb_size_atom + latent_dim, emb_size_atom)
         self.edge_emb = EdgeEmbedding(
             emb_size_atom, num_radial, emb_size_edge, activation=activation
@@ -472,14 +477,15 @@ class GemNetT(torch.nn.Module):
         # Indices for swapping c->a and a->c (for symmetric MP)
         block_sizes = neighbors // 2
         # print(f"Block sizes: {block_sizes}")
-        id_swap = repeat_blocks(
-            block_sizes,
-            repeats=2,
-            continuous_indexing=False,
-            start_idx=block_sizes[0],
-            block_inc=block_sizes[:-1] + block_sizes[1:],
-            repeat_inc=-block_sizes,
-        )
+        id_swap = None
+        # id_swap = repeat_blocks(
+        #     block_sizes,
+        #     repeats=2,
+        #     continuous_indexing=False,
+        #     start_idx=block_sizes[0],
+        #     block_inc=block_sizes[:-1] + block_sizes[1:],
+        #     repeat_inc=-block_sizes,
+        # )
 
         id3_ba, id3_ca, id3_ragged_idx = self.get_triplets(
             edge_index, num_atoms=num_atoms.sum(),
@@ -510,126 +516,126 @@ class GemNetT(torch.nn.Module):
             atom_frac_coords: (N_atoms, 3)
             atom_types: (N_atoms, MAX_ATOMIC_NUM)
         """
-        try:
-            pos = frac_to_cart_coords(frac_coords, lengths, angles, num_atoms)
-            batch = torch.arange(num_atoms.size(0),
-                                device=num_atoms.device).repeat_interleave(
-                                    num_atoms, dim=0)
-            # atomic_numbers = atom_types #warning atom emb
+    
+        pos = frac_to_cart_coords(frac_coords, lengths, angles, num_atoms)
+        batch = torch.arange(num_atoms.size(0),
+                            device=num_atoms.device).repeat_interleave(
+                                num_atoms, dim=0)
+        # atomic_numbers = atom_types #warning atom emb
 
-            # torch.set_printoptions(threshold=999999999999999999999999)  # Adjust the threshold as needed
-            # num_rows = pos.size(0)
+        # torch.set_printoptions(threshold=999999999999999999999999)  # Adjust the threshold as needed
+        # num_rows = pos.size(0)
 
-            # # Calculate the indices to split the tensor into 15 parts
-            # split_size = num_rows // 15
-            # remainder = num_rows % 15
+        # # Calculate the indices to split the tensor into 15 parts
+        # split_size = num_rows // 15
+        # remainder = num_rows % 15
 
-            # # Split the tensor into 15 parts
-            # parts = [pos[i*split_size:(i+1)*split_size] for i in range(15)]
+        # # Split the tensor into 15 parts
+        # parts = [pos[i*split_size:(i+1)*split_size] for i in range(15)]
 
-            # # If there is a remainder, add the remaining rows to the last part
-            # if remainder > 0:
-            #     parts[-1] = torch.cat((parts[-1], pos[15*split_size:]), dim=0)
+        # # If there is a remainder, add the remaining rows to the last part
+        # if remainder > 0:
+        #     parts[-1] = torch.cat((parts[-1], pos[15*split_size:]), dim=0)
 
-            # # Print each part separately
-            # for i, part in enumerate(parts):
-            #     print(f"Part {i+1} of pos:", part)
-            # print("lengths:", lengths)
-            # print("angles:", angles)
-            # print("num_atoms:", num_atoms)
-            # print("edge_index:", edge_index)
-            # print("to_jimages:", to_jimages)
-            # print("num_bonds:", num_bonds)
-            (
-                edge_index,
-                neighbors,
-                D_st,
-                V_st,
-                id_swap,
-                id3_ba,
-                id3_ca,
-                id3_ragged_idx,
-            ) = self.generate_interaction_graph(
-                pos, lengths, angles, num_atoms, edge_index, to_jimages,
-                num_bonds)
-            idx_s, idx_t = edge_index
+        # # Print each part separately
+        # for i, part in enumerate(parts):
+        #     print(f"Part {i+1} of pos:", part)
+        # print("lengths:", lengths)
+        # print("angles:", angles)
+        # print("num_atoms:", num_atoms)
+        # print("edge_index:", edge_index)
+        # print("to_jimages:", to_jimages)
+        # print("num_bonds:", num_bonds)
+        (
+            edge_index,
+            neighbors,
+            D_st,
+            V_st,
+            id_swap,
+            id3_ba,
+            id3_ca,
+            id3_ragged_idx,
+        ) = self.generate_interaction_graph( #add latent embedding and possibly use teacher forcing on angles
+            pos, lengths, angles, num_atoms, edge_index, to_jimages,
+            num_bonds)
+        idx_s, idx_t = edge_index
 
-            # Calculate triplet angles
-            cosφ_cab = inner_product_normalized(V_st[id3_ca], V_st[id3_ba])
-            rad_cbf3, cbf3 = self.cbf_basis3(D_st, cosφ_cab, id3_ca)
+        # Calculate triplet angles
+        cosφ_cab = inner_product_normalized(V_st[id3_ca], V_st[id3_ba])
+        rad_cbf3, cbf3 = self.cbf_basis3(D_st, cosφ_cab, id3_ca)
 
-            rbf = self.radial_basis(D_st)
+        rbf = self.radial_basis(D_st)
 
-            # Embedding block
-            h = self.atom_emb(atom_types)
-            # h = atom_types
-            # Merge z and atom embedding
-            if z is not None: #look
-                z_per_atom = z.repeat_interleave(num_atoms, dim=0)
-                h = torch.cat([h, z_per_atom], dim=1)
-                h = self.atom_latent_emb(h)
-            # (nAtoms, emb_size_atom)
-            m = self.edge_emb(h, rbf, idx_s, idx_t)  # (nEdges, emb_size_edge)
+        # Embedding block
+        h = self.atom_emb(atom_types)
+        # h = atom_types
+        # Merge z and atom embedding
+        if z is not None: #look
+            z_per_atom = z.repeat_interleave(num_atoms, dim=0)
+            h = torch.cat([h, z_per_atom], dim=1)
+            h = self.atom_latent_emb(h)
+        # (nAtoms, emb_size_atom)
+        m = self.edge_emb(h, rbf, idx_s, idx_t)  # (nEdges, emb_size_edge)
 
-            rbf3 = self.mlp_rbf3(rbf)
-            cbf3 = self.mlp_cbf3(rad_cbf3, cbf3, id3_ca, id3_ragged_idx)
+        rbf3 = self.mlp_rbf3(rbf)
+        cbf3 = self.mlp_cbf3(rad_cbf3, cbf3, id3_ca, id3_ragged_idx)
 
-            rbf_h = self.mlp_rbf_h(rbf)
-            rbf_out = self.mlp_rbf_out(rbf)
+        rbf_h = self.mlp_rbf_h(rbf)
+        rbf_out = self.mlp_rbf_out(rbf)
 
-            E_t, F_st = self.out_blocks[0](h, m, rbf_out, idx_t)
+        E_t, F_st = self.out_blocks[0](h, m, rbf_out, idx_t)
+        # (nAtoms, num_targets), (nEdges, num_targets)
+
+        for i in range(self.num_blocks):
+            # Interaction block
+            h, m = self.int_blocks[i](
+                h=h,
+                m=m,
+                rbf3=rbf3,
+                cbf3=cbf3,
+                id3_ragged_idx=id3_ragged_idx,
+                id_swap=id_swap,
+                id3_ba=id3_ba,
+                id3_ca=id3_ca,
+                rbf_h=rbf_h,
+                idx_s=idx_s,
+                idx_t=idx_t,
+            )  # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
+
+            E, F = self.out_blocks[i + 1](h, m, rbf_out, idx_t) #look here to possibly change output for pred_len within model if tested
             # (nAtoms, num_targets), (nEdges, num_targets)
+            F_st += F
+            E_t += E
 
-            for i in range(self.num_blocks):
-                # Interaction block
-                h, m = self.int_blocks[i](
-                    h=h,
-                    m=m,
-                    rbf3=rbf3,
-                    cbf3=cbf3,
-                    id3_ragged_idx=id3_ragged_idx,
-                    id_swap=id_swap,
-                    id3_ba=id3_ba,
-                    id3_ca=id3_ca,
-                    rbf_h=rbf_h,
-                    idx_s=idx_s,
-                    idx_t=idx_t,
-                )  # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
+        nMolecules = torch.max(batch) + 1
 
-                E, F = self.out_blocks[i + 1](h, m, rbf_out, idx_t) #look here to possibly change output for pred_len within model if tested
-                # (nAtoms, num_targets), (nEdges, num_targets)
-                F_st += F
-                E_t += E
+        # always use mean aggregation
+        E_t = scatter(
+            E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
+        )  # (nMolecules, num_targets)
 
-            nMolecules = torch.max(batch) + 1
+        if self.regress_forces:
+            # if predict forces, there should be only 1 energy
+            assert E_t.size(1) == 1
+            # map forces in edge directions
+            F_st_vec = F_st[:, :, None] * V_st[:, None, :]
+            # (nEdges, num_targets, 3)
+            F_t = scatter(
+                F_st_vec,
+                idx_t,
+                dim=0,
+                dim_size=num_atoms.sum(),
+                reduce="add",
+            )  # (nAtoms, num_targets, 3)
+            F_t = F_t.squeeze(1)  # (nAtoms, 3)
 
-            # always use mean aggregation
-            E_t = scatter(
-                E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
-            )  # (nMolecules, num_targets)
-
-            if self.regress_forces:
-                # if predict forces, there should be only 1 energy
-                assert E_t.size(1) == 1
-                # map forces in edge directions
-                F_st_vec = F_st[:, :, None] * V_st[:, None, :]
-                # (nEdges, num_targets, 3)
-                F_t = scatter(
-                    F_st_vec,
-                    idx_t,
-                    dim=0,
-                    dim_size=num_atoms.sum(),
-                    reduce="add",
-                )  # (nAtoms, num_targets, 3)
-                F_t = F_t.squeeze(1)  # (nAtoms, 3)
-
-                # return h for predicting atom types
-                return h, F_t  # (nMolecules, num_targets), (nAtoms, 3)
-            else:
-                return E_t
-        except Exception as e:
-            print(f"Error in batch: {str(e)}")
-            return None, None
+            # return h for predicting atom types
+            return h, F_t  # (nMolecules, num_targets), (nAtoms, 3)
+        else:
+            return E_t
+        # except Exception as e:
+        #     print(f"Error in batch: {str(e)}")
+        #     return None, None
 
     @property
     def num_params(self):

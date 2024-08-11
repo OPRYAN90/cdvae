@@ -136,7 +136,7 @@ class CrystGNN_Supervise(BaseModule):
 class CDVAE(BaseModule):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-
+        self.i = 0
         self.encoder = hydra.utils.instantiate(
             self.hparams.encoder, num_targets=self.hparams.latent_dim)
         self.decoder = hydra.utils.instantiate(self.hparams.decoder)
@@ -339,7 +339,7 @@ class CDVAE(BaseModule):
         # (pred_num_atoms, pred_lengths_and_angles, pred_lengths, pred_angles,
         #  pred_composition_per_atom) = self.decode_stats(
         #     z, batch.num_atoms, batch.lengths, batch.angles, teacher_forcing)
-        pred_num_atoms, z_l_mu, z_l_logvar, z_ang_mu, z_ang_logvar, z_a_mu, z_a_logvar, z_x_mu, z_x_logvar = self.decode_stats_hidden(hidden, batch.num_atoms, batch.lengths, batch.angles, teacher_forcing)
+        pred_num_atoms,z_l_mu, z_l_logvar, z_ang_mu, z_ang_logvar, z_a_mu, z_a_logvar, z_x_mu, z_x_logvar = self.decode_stats_hidden(hidden, batch.num_atoms, batch.lengths, batch.angles, teacher_forcing)
         z_l = self.reparameterize(z_l_mu, z_l_logvar)
         z_ang = self.reparameterize(z_ang_mu, z_ang_logvar)
         z_a = self.reparameterize(z_a_mu, z_a_logvar)
@@ -379,9 +379,9 @@ class CDVAE(BaseModule):
         # noisy_frac_coords = cart_to_frac_coords(
         #     cart_coords, pred_lengths, pred_angles, batch.num_atoms)
         # print(f"z_x: {z_x}z_a: {z_a} z_l: {z_l} z_ang: {z_ang} num_atoms: {batch.num_atoms}")
-        pred_cart, pred_atom_types = self.decoder(z=None,pred_frac_coords=z_x, pred_atom_types=z_a, num_atoms=batch.num_atoms, lengths=z_l, angles=z_ang)
+        pred_cart, pred_atom_types = self.decoder(z=hidden,pred_frac_coords=z_x, pred_atom_types=z_a, num_atoms=batch.num_atoms, lengths=z_l, angles=z_ang, batch=batch)
         if pred_cart is None and pred_atom_types is None:
-            return self.return_zeros()
+            return self.return_zeros(batch)
         # pred_fractional = cart_to_frac_coords(pred_cart, z_l, z_ang, batch.num_atoms)
         # compute loss.
         num_atom_loss = self.num_atom_loss(pred_num_atoms, batch) #number of atoms in material
@@ -396,7 +396,7 @@ class CDVAE(BaseModule):
         kld_loss_x = self.kld_loss(z_x, z_x_logvar)
         kld_loss = kld_loss_a + kld_loss_l + kld_loss_ang + kld_loss_x #check relative scalings of all kld losses
         if self.hparams.predict_property:
-            property_loss = self.property_loss(z, batch)
+            property_loss = self.property_loss(hidden, batch)
         else:
             property_loss = 0.
 
@@ -611,23 +611,24 @@ class CDVAE(BaseModule):
             log_dict,
         )
         return loss
-    def return_zeros(self):
+    def return_zeros(self, batch):
+        device = batch.num_atoms.device
         return {
-            'num_atom_loss': torch.tensor(0.0, requires_grad=True),
-            'lattice_loss': torch.tensor(0.0, requires_grad=True),
-            'coord_loss': torch.tensor(0.0, requires_grad=True),
-            'type_loss': torch.tensor(0.0, requires_grad=True),
-            'kld_loss': torch.tensor(0.0, requires_grad=True),
-            'property_loss': torch.tensor(0.0, requires_grad=True),
-            'pred_num_atoms': torch.tensor(0.0),
-            'pred_lengths_and_angles': torch.tensor(0.0),
-            'pred_lengths': torch.tensor(0.0),
-            'pred_angles': torch.tensor(0.0),
-            'pred_cart': torch.tensor(0.0),
-            'pred_atom_types': torch.tensor(0.0),
-            'target_frac_coords': torch.tensor(0.0),
-            'target_atom_types': torch.tensor(0.0),
-            'hidden': torch.tensor(0.0),
+            'num_atom_loss': torch.tensor(0.0, requires_grad=True, device=device),
+            'lattice_loss': torch.tensor(0.0, requires_grad=True, device=device),
+            'coord_loss': torch.tensor(0.0, requires_grad=True, device=device),
+            'type_loss': torch.tensor(0.0, requires_grad=True, device=device),
+            'kld_loss': torch.tensor(0.0, requires_grad=True, device=device),
+            'property_loss': torch.tensor(0.0, requires_grad=True, device=device),
+            'pred_num_atoms': torch.tensor(0.0, device=device),
+            'pred_lengths_and_angles': torch.tensor(0.0, device=device),
+            'pred_lengths': torch.tensor(0.0, device=device),
+            'pred_angles': torch.tensor(0.0, device=device),
+            'pred_cart': torch.tensor(0.0, device=device),
+            'pred_atom_types': torch.tensor(0.0, device=device),
+            'target_frac_coords': torch.tensor(0.0, device=device),
+            'target_atom_types': torch.tensor(0.0, device=device),
+            'hidden': torch.tensor(0.0, device=device),
         }
 
     def dummies(self, log_dict, prefix):
@@ -664,7 +665,9 @@ class CDVAE(BaseModule):
             self.hparams.beta * kld_loss +
             # self.hparams.cost_composition * composition_loss +
             self.hparams.cost_property * property_loss)
-
+        if self.i % 10 == 0:
+            print(f"Iteration {self.i}, loss: {loss}")
+        self.i += 1
         log_dict = {
             f'{prefix}_loss': loss,
             f'{prefix}_natom_loss': num_atom_loss,

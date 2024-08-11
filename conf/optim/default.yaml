@@ -1,6 +1,6 @@
 optimizer:
   #  Adam-oriented deep learning
-  _target_: torch.optim.Adam
+  _target_: torch.optim.AdamW
   #  These are all default parameters for the Adam optimizer
   lr: 0.001
   betas: [ 0.9, 0.999 ]
