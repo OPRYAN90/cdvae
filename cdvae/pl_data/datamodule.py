@@ -49,7 +49,6 @@ class CrystDataModule(pl.LightningDataModule):
         self.train_dataset: Optional[Dataset] = None
         self.val_datasets: Optional[Sequence[Dataset]] = None
         self.test_datasets: Optional[Sequence[Dataset]] = None
-
         self.get_scaler(scaler_path)
 
     def prepare_data(self) -> None:
@@ -66,6 +65,7 @@ class CrystDataModule(pl.LightningDataModule):
             self.scaler = get_scaler_from_data_list(
                 train_dataset.cached_data,
                 key=train_dataset.prop)
+            self.train_dataset = train_dataset
         else:
             self.lattice_scaler = torch.load(
                 Path(scaler_path) / 'lattice_scaler.pt')
@@ -76,14 +76,13 @@ class CrystDataModule(pl.LightningDataModule):
         construct datasets and assign data scalers.
         """
         if stage is None or stage == "fit":
-            self.train_dataset = hydra.utils.instantiate(self.datasets.train)
             self.val_datasets = [
                 hydra.utils.instantiate(dataset_cfg)
                 for dataset_cfg in self.datasets.val
             ]
 
-            self.train_dataset.lattice_scaler = self.lattice_scaler #normalization
-            self.train_dataset.scaler = self.scaler #normalization 
+            self.train_dataset.lattice_scaler = self.lattice_scaler
+            self.train_dataset.scaler = self.scaler
             for val_dataset in self.val_datasets:
                 val_dataset.lattice_scaler = self.lattice_scaler
                 val_dataset.scaler = self.scaler
