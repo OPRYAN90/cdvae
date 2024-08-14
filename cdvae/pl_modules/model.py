@@ -665,7 +665,7 @@ class CDVAE(BaseModule):
             self.hparams.beta * kld_loss +
             # self.hparams.cost_composition * composition_loss +
             self.hparams.cost_property * property_loss)
-        if self.i % 10 == 0:
+        if self.i % 25 == 0:
             print(f"Iteration {self.i}, loss: {loss}")
         self.i += 1
         log_dict = {

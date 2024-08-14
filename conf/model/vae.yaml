@@ -1,7 +1,7 @@
 _target_: cdvae.pl_modules.model.CDVAE
 hidden_dim: 256
 latent_dim: 256
-fc_num_layers: 2
+fc_num_layers: 5
 max_atoms: ${data.max_atoms}
 cost_natom: 1.
 cost_coord: 1.0
