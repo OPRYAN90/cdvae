@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch_scatter import scatter
 from tqdm import tqdm
+from diffusers.schedulers import EulerDiscreteScheduler as FlowMatchEulerDiscreteScheduler
 
 from cdvae.common.utils import PROJECT_ROOT
 from cdvae.common.data_utils import (
@@ -153,11 +154,11 @@ class CDVAE(BaseModule):
         self.fc_num_atoms = build_mlp(self.hparams.latent_dim, self.hparams.hidden_dim,
                                       self.hparams.fc_num_layers, self.hparams.max_atoms+1)
         self.fc_lattice = build_mlp(self.hparams.latent_dim, self.hparams.hidden_dim,
-                                    self.hparams.fc_num_layers, 6*2) #change
+                                    self.hparams.fc_num_layers, 6) #change
         self.fc_composition = build_mlp(self.hparams.latent_dim, self.hparams.hidden_dim,
-                                        self.hparams.fc_num_layers, 64*2)
+                                        self.hparams.fc_num_layers, 64)
         self.fc_frac_coords = build_mlp(self.hparams.latent_dim, self.hparams.hidden_dim,
-                                        self.hparams.fc_num_layers, 3*2)
+                                        self.hparams.fc_num_layers+4, 3)
         # for property prediction.
         if self.hparams.predict_property:
             self.fc_property = build_mlp(self.hparams.latent_dim, self.hparams.hidden_dim,
@@ -224,12 +225,15 @@ class CDVAE(BaseModule):
             if self.hparams.teacher_forcing_lattice and teacher_forcing:
                 lengths = gt_lengths
                 angles = gt_angles
+            frac_coords = self.predict_frac_coords(z, gt_num_atoms)
         else:
+            print("teacher forcing is false WARNING")
             num_atoms = self.predict_num_atoms(z).argmax(dim=-1)
             lengths_and_angles, lengths, angles = (
                 self.predict_lattice(z, num_atoms))
             composition_per_atom = self.predict_composition(z, num_atoms)
-        return num_atoms, lengths_and_angles, lengths, angles, composition_per_atom
+            frac_coords = self.predict_frac_coords(z, num_atoms)
+        return num_atoms, lengths_and_angles, lengths, angles, composition_per_atom, frac_coords
     def decode_stats_hidden(self, hidden, gt_num_atoms=None, gt_lengths=None, gt_angles=None,teacher_forcing=False):
         if gt_num_atoms is not None:
             num_atoms = self.predict_num_atoms(hidden)
@@ -331,96 +335,183 @@ class CDVAE(BaseModule):
         samples = self.langevin_dynamics(z, ld_kwargs)
         return samples
 
-    def forward(self, batch, teacher_forcing, training):
-        # hacky way to resolve the NaN issue. Will need more careful debugging later.
-        # mu, log_var, z = self.encode(batch)
-        # print(batch.num_atoms)
-        hidden = self.encoder(batch)
-        # (pred_num_atoms, pred_lengths_and_angles, pred_lengths, pred_angles,
-        #  pred_composition_per_atom) = self.decode_stats(
-        #     z, batch.num_atoms, batch.lengths, batch.angles, teacher_forcing)
-        pred_num_atoms,z_l_mu, z_l_logvar, z_ang_mu, z_ang_logvar, z_a_mu, z_a_logvar, z_x_mu, z_x_logvar = self.decode_stats_hidden(hidden, batch.num_atoms, batch.lengths, batch.angles, teacher_forcing)
-        z_l = self.reparameterize(z_l_mu, z_l_logvar)
-        z_ang = self.reparameterize(z_ang_mu, z_ang_logvar)
-        z_a = self.reparameterize(z_a_mu, z_a_logvar)
-        z_x = self.reparameterize(z_x_mu, z_x_logvar)
-        z_pred_lengths_and_angles_original = torch.cat([z_l, z_ang], dim=1)
-        z_pred_lengths_and_angles = self.lattice_scaler.inverse_transform(z_pred_lengths_and_angles_original) #scaled
-        z_l, z_ang = z_pred_lengths_and_angles[:, :3], z_pred_lengths_and_angles[:, 3:]
-        if self.hparams.data.lattice_scale_method == 'scale_length':
-            z_l = z_l * batch.num_atoms.view(-1, 1).float()**(1/3)
-        # sample noise levels.
-        # noise_level = torch.randint(0, self.sigmas.size(0),
-        #                             (batch.num_atoms.size(0),),
-        #                             device=self.device)
-        # used_sigmas_per_atom = self.sigmas[noise_level].repeat_interleave(
-        #     batch.num_atoms, dim=0)
-        # type_noise_level = torch.randint(0, self.type_sigmas.size(0),
-        #                                  (batch.num_atoms.size(0),),
-        #                                  device=self.device)
-        # used_type_sigmas_per_atom = (
-        #     self.type_sigmas[type_noise_level].repeat_interleave(
-        #         batch.num_atoms, dim=0))
-        # # add noise to atom types and sample atom types.
-        # pred_composition_probs = F.softmax(z_a.detach(), dim=-1)
-        # atom_type_probs = ( #encoder encoded in latent space now figure out how to put into decoder with ldvae
-        #     F.one_hot(batch.atom_types - 1, num_classes=MAX_ATOMIC_NUM) +
-        #     pred_composition_probs * used_type_sigmas_per_atom[:, None])
-        # rand_atom_types = torch.multinomial(
-        #     atom_type_probs, num_samples=1).squeeze(1) + 1
-#consider dropout
-        # add noise to the cart coords
-        # cart_noises_per_atom = (
-        #     torch.randn_like(batch.frac_coords) *
-        #     used_sigmas_per_atom[:, None])
-        # cart_coords = frac_to_cart_coords(
-        #     batch.frac_coords, pred_lengths, pred_angles, batch.num_atoms)
-        # cart_coords = cart_coords + cart_noises_per_atom
-        # noisy_frac_coords = cart_to_frac_coords(
-        #     cart_coords, pred_lengths, pred_angles, batch.num_atoms)
-        # print(f"z_x: {z_x}z_a: {z_a} z_l: {z_l} z_ang: {z_ang} num_atoms: {batch.num_atoms}")
-        pred_cart, pred_atom_types = self.decoder(z=hidden,pred_frac_coords=z_x, pred_atom_types=z_a, num_atoms=batch.num_atoms, lengths=z_l, angles=z_ang, batch=batch)
-        if pred_cart is None and pred_atom_types is None:
-            return self.return_zeros(batch)
-        # pred_fractional = cart_to_frac_coords(pred_cart, z_l, z_ang, batch.num_atoms)
-        # compute loss.
-        num_atom_loss = self.num_atom_loss(pred_num_atoms, batch) #number of atoms in material
-        lattice_loss = self.lattice_loss(z_pred_lengths_and_angles_original, batch) #lattice of matieral
-        # composition_loss = self.composition_loss(pred_composition_per_atom, batch.atom_types, batch) #compisition of atoms in material
-        coord_loss = self.vae_coord_loss(pred_cart, batch) #denoising loss
-        type_loss = self.vae_type_loss(pred_atom_types, batch) #types of atoms in material
+    def forward(self, batch, teacher_forcing, training, phase='vae'):
+        # Encode
+        mu, log_var, z = self.encode(batch)
+        
+        # Decode stats from z
+        pred_num_atoms, pred_lengths_and_angles, pred_lengths, pred_angles, z_a, z_x = self.decode_stats(
+            z, batch.num_atoms, batch.lengths, batch.angles, teacher_forcing
+        )
 
-        kld_loss_a = self.kld_loss(z_a, z_a_logvar)
-        kld_loss_l = self.kld_loss(z_l, z_l_logvar)
-        kld_loss_ang = self.kld_loss(z_ang, z_ang_logvar)
-        kld_loss_x = self.kld_loss(z_x, z_x_logvar)
-        kld_loss = kld_loss_a + kld_loss_l + kld_loss_ang + kld_loss_x #check relative scalings of all kld losses
-        if self.hparams.predict_property:
-            property_loss = self.property_loss(hidden, batch)
+        if phase == 'vae':
+            # VAE phase - use decoder to get final predictions
+            pred_cart, pred_atom_types = self.decoder(
+                z=z,
+                pred_frac_coords=z_x,
+                pred_atom_types=z_a,
+                num_atoms=batch.num_atoms,
+                lengths=pred_lengths,
+                angles=pred_angles,
+                batch=batch
+            )
+
+            if pred_cart is None and pred_atom_types is None:
+                return self.return_zeros(batch)
+
+            return {
+                'num_atom_loss': self.num_atom_loss(pred_num_atoms, batch),
+                'lattice_loss': self.lattice_loss(pred_lengths_and_angles, batch),
+                'coord_loss': self.vae_coord_loss(pred_cart, batch),
+                'type_loss': self.vae_type_loss(pred_atom_types, batch),
+                'kld_loss': self.kld_loss(mu, log_var),
+                'property_loss': self.property_loss(z, batch) if self.hparams.predict_property else 0.,
+                'pred_num_atoms': pred_num_atoms,
+                'pred_lengths_and_angles': pred_lengths_and_angles,
+                'pred_lengths': pred_lengths,
+                'pred_angles': pred_angles,
+                'pred_cart': pred_cart,
+                'pred_atom_types': pred_atom_types,
+                'target_frac_coords': batch.frac_coords,
+                'target_atom_types': batch.atom_types,
+                'hidden': z,
+            }
+
+        elif phase == 'diffusion':
+            batch_size = z.shape[0]
+            
+            # Sample timestep/noise level
+            u = torch.normal(mean=0.0, std=1.0, size=(batch_size,), device=self.device)
+            weighting = torch.nn.functional.sigmoid(u)
+            timesteps = weighting * 100  # Scale to [0,100]
+            
+            # Add noise to composition and coordinates
+            sigma_a = weighting[:, None]  # [B, 1]
+            sigma_x = weighting.repeat_interleave(batch.num_atoms, dim=0)[:, None]  # [sum(N_atoms), 1]
+            
+            noise_a = torch.randn_like(z_a)
+            noise_x = torch.randn_like(z_x)
+            
+            noised_comp = sigma_a * noise_a + (1.0 - sigma_a) * z_a
+            noised_coords = sigma_x * noise_x + (1.0 - sigma_x) * z_x
+            
+            # Predict noise
+            pred_noise_a = self.noise_predictor_a(noised_comp, timesteps)
+            pred_noise_x = self.noise_predictor_x(noised_coords, timesteps.repeat_interleave(batch.num_atoms, dim=0))
+            
+            # Compute losses
+            loss_a = F.mse_loss(pred_noise_a, noise_a)
+            loss_x = F.mse_loss(pred_noise_x, noise_x)
+            
+            total_loss = loss_a + loss_x
+
+            return {
+                'noise_loss': total_loss,
+                'noise_loss_a': loss_a,
+                'noise_loss_x': loss_x,
+                'pred_composition': z_a,
+                'pred_coords': z_x,
+                'noised_comp': noised_comp,
+                'noised_coords': noised_coords,
+                'pred_noise_a': pred_noise_a,
+                'pred_noise_x': pred_noise_x,
+                'noise_a': noise_a,
+                'noise_x': noise_x,
+                't': timesteps,
+                'sigmas': weighting
+            }
+
+    def sample(self, num_samples, num_atoms_per_crystal, num_inference_steps=100, device="cuda"):
+        """Sample new crystal structures using the rectified flow method.
+        
+        Args:
+            num_samples: Number of crystal structures to generate
+            num_atoms_per_crystal: Tensor of shape [B] specifying atoms per crystal
+            num_inference_steps: Number of denoising steps
+            device: Device to run sampling on
+        """
+        self.eval()
+        
+        with torch.no_grad():
+            # 1. Initialize noise scheduler
+            noise_scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=num_inference_steps)
+            noise_scheduler.set_timesteps(num_inference_steps, device=device)
+            
+            # 2. Initialize hidden representations and get lattice params
+            hidden = torch.randn(num_samples, self.hparams.latent_dim, device=device)
+            _, _, lengths, angles, _, _ = self.decode_stats(
+                hidden, num_atoms_per_crystal, None, None, teacher_forcing=False
+            )
+            
+            # 3. Initialize noised composition and coordinates
+            total_atoms = num_atoms_per_crystal.sum()
+            noised_composition = torch.randn(total_atoms, 64, device=device)
+            noised_coords = torch.randn(total_atoms, 3, device=device)
+            
+            # 4. Iterative denoising
+            for t in range(num_inference_steps):
+                timestep = noise_scheduler.timesteps[t].to(device)
+                timesteps_per_atom = timestep.repeat(total_atoms)
+                
+                # Predict and denoise composition
+                noise_pred_comp = self.noise_predictor_a(noised_composition, timesteps_per_atom)
+                scheduler_output_comp = noise_scheduler.step(
+                    noise_pred_comp, timestep, noised_composition
+                )
+                noised_composition = scheduler_output_comp.prev_sample
+                
+                # Predict and denoise coordinates
+                noise_pred_coords = self.noise_predictor_x(noised_coords, timesteps_per_atom)
+                scheduler_output_coords = noise_scheduler.step(
+                    noise_pred_coords, timestep, noised_coords
+                )
+                noised_coords = scheduler_output_coords.prev_sample
+            denoised_composition = noised_composition
+            denoised_coords = noised_coords
+            # 5. Generate final structure
+            pred_cart, pred_atom_types = self.decoder(
+                z=hidden,
+                pred_frac_coords=denoised_coords,
+                pred_atom_types=denoised_composition,
+                num_atoms=num_atoms_per_crystal,
+                lengths=lengths,
+                angles=angles,
+                batch=None
+            )
+
+            atom_types = torch.argmax(pred_atom_types, dim=-1) + 1
+            frac_coords = cart_to_frac_coords(pred_cart, lengths, angles, num_atoms_per_crystal)
+            
+            return {
+                'atom_types': atom_types,
+                'frac_coords': frac_coords,
+                'lengths': lengths, #transform to actual length
+                'angles': angles, #transform to actual angle
+                'num_atoms': num_atoms_per_crystal,
+                'pred_cart': pred_cart,
+                'pred_atom_types': pred_atom_types,
+                'hidden': hidden,
+                'composition_per_atom': denoised_composition,
+                'final_coords': denoised_coords
+            }
+    def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+        # Get current training phase
+        phase = getattr(self, 'training_phase', 'vae')  # Default to VAE phase
+        
+        teacher_forcing = (
+            self.current_epoch <= self.hparams.teacher_forcing_max_epoch
+        ) if phase == 'vae' else False
+        
+        outputs = self(batch, teacher_forcing, training=True, phase=phase)
+        
+        if phase == 'vae':
+            log_dict, loss = self.compute_stats(batch, outputs, prefix='train')
         else:
-            property_loss = 0.
-
-        return {
-            'num_atom_loss': num_atom_loss,
-            'lattice_loss': lattice_loss,
-            # 'composition_loss': composition_loss,
-            'coord_loss': coord_loss,
-            'type_loss': type_loss,
-            'kld_loss': kld_loss,
-            'property_loss': property_loss,
-            'pred_num_atoms': pred_num_atoms,
-            'pred_lengths_and_angles': z_pred_lengths_and_angles,
-            'pred_lengths': z_l,
-            'pred_angles': z_ang,
-            'pred_cart': pred_cart,
-            'pred_atom_types': pred_atom_types,
-            # 'pred_composition_per_atom': pred_composition_per_atom,
-            'target_frac_coords': batch.frac_coords,
-            'target_atom_types': batch.atom_types,
-            # 'rand_frac_coords': noisy_frac_coords,
-            # 'rand_atom_types': rand_atom_types,
-            'hidden': hidden,
-        }
+            loss = outputs['noise_loss']
+            log_dict = {'train_noise_loss': loss}
+        
+        self.log_dict(log_dict, on_step=True, on_epoch=True, prog_bar=True)
+        return loss
 
     def generate_rand_init(self, pred_composition_per_atom, pred_lengths,
                            pred_angles, num_atoms, batch):
@@ -505,14 +596,12 @@ class CDVAE(BaseModule):
     def predict_composition(self, z, num_atoms):
         z_per_atom = z.repeat_interleave(num_atoms, dim=0)
         pred_composition_per_atom = self.fc_composition(z_per_atom)
-        z_a_mu, z_a_logvar = pred_composition_per_atom[:, :64], pred_composition_per_atom[:, 64:]
-        return z_a_mu, z_a_logvar
+        return pred_composition_per_atom
 
     def predict_frac_coords(self, z, num_atoms):
         z_per_atom = z.repeat_interleave(num_atoms, dim=0)
         out = self.fc_frac_coords(z_per_atom)
-        z_x_mu, z_x_logvar = out[:, :3], out[:, 3:]
-        return z_x_mu, z_x_logvar
+        return out
 
     def num_atom_loss(self, pred_num_atoms, batch):
         return F.cross_entropy(pred_num_atoms, batch.num_atoms)
@@ -580,18 +669,18 @@ class CDVAE(BaseModule):
             -0.5 * torch.sum(1 + log_var - mu**2 - log_var.exp(), dim=1), dim=0)
         return kld_loss
 
-    def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
-        teacher_forcing = (
-            self.current_epoch <= self.hparams.teacher_forcing_max_epoch)
-        outputs = self(batch, teacher_forcing, training=True)
-        log_dict, loss = self.compute_stats(batch, outputs, prefix='train')
-        self.log_dict(
-            log_dict,
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-        )
-        return loss
+    # def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+    #     teacher_forcing = (
+    #         self.current_epoch <= self.hparams.teacher_forcing_max_epoch)
+    #     outputs = self(batch, teacher_forcing, training=True)
+    #     log_dict, loss = self.compute_stats(batch, outputs, prefix='train')
+    #     self.log_dict(
+    #         log_dict,
+    #         on_step=True,
+    #         on_epoch=True,
+    #         prog_bar=True,
+    #     )
+    #     return loss
 
     def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         outputs = self(batch, teacher_forcing=False, training=False)
