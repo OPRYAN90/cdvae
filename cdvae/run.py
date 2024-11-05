@@ -1,5 +1,7 @@
 import sys
 import os
+import sys
+print(sys.version)
 import distutils.version
 # Set the PYTHONPATH to the directory containing cdvae
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
