@@ -25,7 +25,7 @@ predict_property: False
 defaults:
   - encoder: dimenet
   - decoder: gemnet
-
+  - noise_prediction_network: denoiser
 # _target_: cdvae.pl_modules.model.CDVAE
 # hidden_dim: 256
 # latent_dim: 256

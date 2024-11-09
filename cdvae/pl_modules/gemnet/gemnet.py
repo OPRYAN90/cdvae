@@ -575,6 +575,7 @@ class GemNetT(torch.nn.Module):
             h = torch.cat([h, z_per_atom], dim=1)
             h = self.atom_latent_emb(h)
         # (nAtoms, emb_size_atom)
+        
         m = self.edge_emb(h, rbf, idx_s, idx_t)  # (nEdges, emb_size_edge)
 
         rbf3 = self.mlp_rbf3(rbf)

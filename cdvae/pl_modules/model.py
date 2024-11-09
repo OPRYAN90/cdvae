@@ -141,6 +141,7 @@ class CDVAE(BaseModule):
         self.encoder = hydra.utils.instantiate(
             self.hparams.encoder, num_targets=self.hparams.latent_dim)
         self.decoder = hydra.utils.instantiate(self.hparams.decoder)
+        self.noise_prediction_network = hydra.utils.instantiate(self.hparams.noise_prediction_network)
         # self.fc_xmu = nn.Linear(self.hparams.latent_dim, 3)
         # self.fx_xvar = nn.Linear(self.hparams.latent_dim, 3)
         # self.fc_lmu = nn.Linear(self.hparams.latent_dim, 6)
@@ -227,7 +228,7 @@ class CDVAE(BaseModule):
                 angles = gt_angles
             frac_coords = self.predict_frac_coords(z, gt_num_atoms)
         else:
-            print("teacher forcing is false WARNING")
+            print("teacher forcing is false WARNING--better be sampling")
             num_atoms = self.predict_num_atoms(z).argmax(dim=-1)
             lengths_and_angles, lengths, angles = (
                 self.predict_lattice(z, num_atoms))
@@ -396,9 +397,17 @@ class CDVAE(BaseModule):
             noised_coords = sigma_x * noise_x + (1.0 - sigma_x) * z_x
             
             # Predict noise
-            pred_noise_a = self.noise_predictor_a(noised_comp, timesteps)
-            pred_noise_x = self.noise_predictor_x(noised_coords, timesteps.repeat_interleave(batch.num_atoms, dim=0))
-            
+            # pred_noise_a = self.noise_predictor_a(noised_comp, timesteps)
+            # pred_noise_x = self.noise_predictor_x(noised_coords, timesteps.repeat_interleave(batch.num_atoms, dim=0))
+            pred_noise_a, pred_noise_x = self.noise_prediction_network( z=z,
+                pred_frac_coords=noised_coords,
+                pred_atom_types=noised_comp,
+                num_atoms=batch.num_atoms,
+                lengths=pred_lengths,
+                angles=pred_angles,
+                batch=batch,
+                timesteps=timesteps #int
+                )
             # Compute losses
             loss_a = F.mse_loss(pred_noise_a, noise_a)
             loss_x = F.mse_loss(pred_noise_x, noise_x)
@@ -421,7 +430,7 @@ class CDVAE(BaseModule):
                 'sigmas': weighting
             }
 
-    def sample(self, num_samples, num_atoms_per_crystal, num_inference_steps=100, device="cuda"):
+    def sample(self, num_samples, num_inference_steps=100, device="cuda"):
         """Sample new crystal structures using the rectified flow method.
         
         Args:
@@ -439,8 +448,8 @@ class CDVAE(BaseModule):
             
             # 2. Initialize hidden representations and get lattice params
             hidden = torch.randn(num_samples, self.hparams.latent_dim, device=device)
-            _, _, lengths, angles, _, _ = self.decode_stats(
-                hidden, num_atoms_per_crystal, None, None, teacher_forcing=False
+            num_atoms_per_crystal, _, lengths, angles, _, _ = self.decode_stats(
+                hidden, None, None, None, teacher_forcing=False
             )
             
             # 3. Initialize noised composition and coordinates
@@ -451,48 +460,58 @@ class CDVAE(BaseModule):
             # 4. Iterative denoising
             for t in range(num_inference_steps):
                 timestep = noise_scheduler.timesteps[t].to(device)
-                timesteps_per_atom = timestep.repeat(total_atoms)
+                timesteps_per_crystal = timestep.repeat(num_samples)
                 
-                # Predict and denoise composition
-                noise_pred_comp = self.noise_predictor_a(noised_composition, timesteps_per_atom)
+                # Predict noise using noise prediction network
+                pred_noise_a, pred_noise_x = self.noise_prediction_network(
+                    z=hidden,
+                    pred_frac_coords=noised_coords,
+                    pred_atom_types=noised_composition,
+                    num_atoms=num_atoms_per_crystal,
+                    lengths=lengths,
+                    angles=angles,
+                    batch=None,
+                    timesteps=timesteps_per_crystal
+                )
+                
+                # Denoise composition
                 scheduler_output_comp = noise_scheduler.step(
-                    noise_pred_comp, timestep, noised_composition
+                    pred_noise_a, timestep, noised_composition
                 )
                 noised_composition = scheduler_output_comp.prev_sample
                 
-                # Predict and denoise coordinates
-                noise_pred_coords = self.noise_predictor_x(noised_coords, timesteps_per_atom)
+                # Denoise coordinates
                 scheduler_output_coords = noise_scheduler.step(
-                    noise_pred_coords, timestep, noised_coords
+                    pred_noise_x, timestep, noised_coords
                 )
                 noised_coords = scheduler_output_coords.prev_sample
-            denoised_composition = noised_composition
-            denoised_coords = noised_coords
-            # 5. Generate final structure
+
+            # 5. Generate final structure using denoised values
             pred_cart, pred_atom_types = self.decoder(
                 z=hidden,
-                pred_frac_coords=denoised_coords,
-                pred_atom_types=denoised_composition,
+                pred_frac_coords=noised_coords,
+                pred_atom_types=noised_composition,
                 num_atoms=num_atoms_per_crystal,
                 lengths=lengths,
                 angles=angles,
                 batch=None
             )
 
+            # 6. Post-process results
             atom_types = torch.argmax(pred_atom_types, dim=-1) + 1
             frac_coords = cart_to_frac_coords(pred_cart, lengths, angles, num_atoms_per_crystal)
             
             return {
                 'atom_types': atom_types,
                 'frac_coords': frac_coords,
-                'lengths': lengths, #transform to actual length
-                'angles': angles, #transform to actual angle
+                'lengths': lengths,
+                'angles': angles,
                 'num_atoms': num_atoms_per_crystal,
                 'pred_cart': pred_cart,
                 'pred_atom_types': pred_atom_types,
                 'hidden': hidden,
-                'composition_per_atom': denoised_composition,
-                'final_coords': denoised_coords
+                'composition_per_atom': noised_composition,
+                'final_coords': noised_coords
             }
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         # Get current training phase

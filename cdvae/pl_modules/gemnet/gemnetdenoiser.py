@@ -4,7 +4,8 @@ Copyright (c) Facebook, Inc. and its affiliates.
 This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 """
-
+import math
+import torch.nn.functional as F
 from typing import Optional
 
 import numpy as np
@@ -19,7 +20,7 @@ from cdvae.common.data_utils import (
 from .layers.atom_update_block import OutputBlock
 from .layers.base_layers import Dense
 from .layers.efficient import EfficientInteractionDownProjection
-from .layers.embedding_block import LatentAtomEmbedding, EdgeEmbedding, AtomEmbedding
+from .layers.embedding_block import EdgeEmbedding, AtomEmbedding
 from .layers.interaction_block import (
     InteractionBlockTripletsOnly,
 )
@@ -32,9 +33,62 @@ from .utils import (
     ragged_range,
     repeat_blocks,
 )
+def build_mlp(in_dim, hidden_dim, fc_num_layers, out_dim):
+    mods = [nn.Linear(in_dim, hidden_dim), nn.ReLU()]
+    for i in range(fc_num_layers-1):
+        mods += [nn.Linear(hidden_dim, hidden_dim), nn.ReLU()]
+    mods += [nn.Linear(hidden_dim, out_dim)]
+    return nn.Sequential(*mods)
+class LearnableTimeEmbedding(nn.Module):
+    def __init__(self, embed_dim):
+        super(LearnableTimeEmbedding, self).__init__()
+        self.embed_dim = embed_dim
+        
+        # Learnable scaling and shift for each frequency component
+        self.time_scale = nn.Parameter(torch.ones(embed_dim))
+        self.time_shift = nn.Parameter(torch.zeros(embed_dim))
+        
+        # Optional learned projection
+        self.time_proj = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim*4),
+            nn.SiLU(),
+            nn.Linear(embed_dim*4, embed_dim)
+        )
 
-
-class GemNetT(torch.nn.Module):
+    def forward(self, timesteps):
+        """
+        Args:
+            timesteps: (batch_size,) - values between 0 and 100
+        Returns:
+            (batch_size, embed_dim) time embeddings
+        """
+        device = timesteps.device
+        half_dim = self.embed_dim // 2
+        
+        # Base frequencies
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = timesteps[:, None] * emb[None, :]  # (batch_size, half_dim)
+        
+        # Compute sinusoidal embeddings
+        emb_sin = torch.sin(emb)
+        emb_cos = torch.cos(emb)
+        
+        # Concatenate and apply learned scaling and shift
+        emb = torch.cat([emb_sin, emb_cos], dim=-1)  # (batch_size, embed_dim)
+        
+        # Handle odd dimensions
+        if self.embed_dim % 2 == 1:
+            emb = F.pad(emb, (0, 1))
+            
+        # Apply learnable scaling and shift
+        emb = emb * self.time_scale + self.time_shift
+        
+        # Apply learned transformation
+        emb = self.time_proj(emb)
+        
+        return emb
+class GemNetTDenoiser(torch.nn.Module):
     """
     GemNet-T, triplets-only variant of GemNet
 
@@ -113,6 +167,7 @@ class GemNetT(torch.nn.Module):
         num_after_skip: int = 2,
         num_concat: int = 1,
         num_atom: int = 3,
+        time_embed_dim: int = 256,
         regress_forces: bool = True,
         cutoff: float = 6.0,
         max_neighbors: int = 50,
@@ -188,9 +243,11 @@ class GemNetT(torch.nn.Module):
             bias=False,
         )
         ### ------------------------------------------------------------------------------------- ###
+        self.time_embed_dim = time_embed_dim
+        self.time_embedding = LearnableTimeEmbedding(time_embed_dim)
 
         # Embedding block
-        self.atom_emb = LatentAtomEmbedding(emb_size_atom)
+        self.atom_emb = build_mlp(64, 420, 5+2, emb_size_atom)
         self.atom_latent_emb = nn.Linear(emb_size_atom + latent_dim, emb_size_atom)
         self.edge_emb = EdgeEmbedding(
             emb_size_atom, num_radial, emb_size_edge, activation=activation
@@ -471,14 +528,16 @@ class GemNetT(torch.nn.Module):
 
         # Indices for swapping c->a and a->c (for symmetric MP)
         block_sizes = neighbors // 2
-        id_swap = repeat_blocks(
-            block_sizes,
-            repeats=2,
-            continuous_indexing=False,
-            start_idx=block_sizes[0],
-            block_inc=block_sizes[:-1] + block_sizes[1:],
-            repeat_inc=-block_sizes,
-        )
+        # print(f"Block sizes: {block_sizes}")
+        id_swap = None
+        # id_swap = repeat_blocks(
+        #     block_sizes,
+        #     repeats=2,
+        #     continuous_indexing=False,
+        #     start_idx=block_sizes[0],
+        #     block_inc=block_sizes[:-1] + block_sizes[1:],
+        #     repeat_inc=-block_sizes,
+        # )
 
         id3_ba, id3_ca, id3_ragged_idx = self.get_triplets(
             edge_index, num_atoms=num_atoms.sum(),
@@ -496,7 +555,7 @@ class GemNetT(torch.nn.Module):
         )
 
     def forward(self, z, frac_coords, atom_types, num_atoms, lengths, angles,
-                edge_index, to_jimages, num_bonds):
+                edge_index, to_jimages, num_bonds, timesteps):
         """
         args:
             z: (N_cryst, num_latent)
@@ -509,12 +568,36 @@ class GemNetT(torch.nn.Module):
             atom_frac_coords: (N_atoms, 3)
             atom_types: (N_atoms, MAX_ATOMIC_NUM)
         """
+    
         pos = frac_to_cart_coords(frac_coords, lengths, angles, num_atoms)
         batch = torch.arange(num_atoms.size(0),
-                             device=num_atoms.device).repeat_interleave(
-                                 num_atoms, dim=0)
+                            device=num_atoms.device).repeat_interleave(
+                                num_atoms, dim=0)
         # atomic_numbers = atom_types #warning atom emb
 
+        # torch.set_printoptions(threshold=999999999999999999999999)  # Adjust the threshold as needed
+        # num_rows = pos.size(0)
+
+        # # Calculate the indices to split the tensor into 15 parts
+        # split_size = num_rows // 15
+        # remainder = num_rows % 15
+
+        # # Split the tensor into 15 parts
+        # parts = [pos[i*split_size:(i+1)*split_size] for i in range(15)]
+
+        # # If there is a remainder, add the remaining rows to the last part
+        # if remainder > 0:
+        #     parts[-1] = torch.cat((parts[-1], pos[15*split_size:]), dim=0)
+
+        # # Print each part separately
+        # for i, part in enumerate(parts):
+        #     print(f"Part {i+1} of pos:", part)
+        # print("lengths:", lengths)
+        # print("angles:", angles)
+        # print("num_atoms:", num_atoms)
+        # print("edge_index:", edge_index)
+        # print("to_jimages:", to_jimages)
+        # print("num_bonds:", num_bonds)
         (
             edge_index,
             neighbors,
@@ -524,7 +607,7 @@ class GemNetT(torch.nn.Module):
             id3_ba,
             id3_ca,
             id3_ragged_idx,
-        ) = self.generate_interaction_graph(
+        ) = self.generate_interaction_graph( #add latent embedding and possibly use teacher forcing on angles
             pos, lengths, angles, num_atoms, edge_index, to_jimages,
             num_bonds)
         idx_s, idx_t = edge_index
@@ -543,6 +626,10 @@ class GemNetT(torch.nn.Module):
             z_per_atom = z.repeat_interleave(num_atoms, dim=0)
             h = torch.cat([h, z_per_atom], dim=1)
             h = self.atom_latent_emb(h)
+        
+        time_emb = self.time_embedding(timesteps)
+        t_emb = time_emb.repeat_interleave(num_atoms, dim=0)
+        h = h + t_emb
         # (nAtoms, emb_size_atom)
         m = self.edge_emb(h, rbf, idx_s, idx_t)  # (nEdges, emb_size_edge)
 
@@ -568,7 +655,7 @@ class GemNetT(torch.nn.Module):
                 id3_ca=id3_ca,
                 rbf_h=rbf_h,
                 idx_s=idx_s,
-                idx_t=idx_t
+                idx_t=idx_t,
             )  # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
 
             E, F = self.out_blocks[i + 1](h, m, rbf_out, idx_t) #look here to possibly change output for pred_len within model if tested
@@ -602,6 +689,9 @@ class GemNetT(torch.nn.Module):
             return h, F_t  # (nMolecules, num_targets), (nAtoms, 3)
         else:
             return E_t
+        # except Exception as e:
+        #     print(f"Error in batch: {str(e)}")
+        #     return None, None
 
     @property
     def num_params(self):
