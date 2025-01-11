@@ -21,35 +21,12 @@ type_sigma_begin: 5.
 type_sigma_end: 0.01
 num_noise_level: 50
 predict_property: False
+training_phase: "vae"  # or "diffusion"
+checkpoint_path: null  # Path to VAE checkpoint when training diffusion
 
 defaults:
   - encoder: dimenet
   - decoder: gemnet
   - noise_prediction_network: denoiser
-# _target_: cdvae.pl_modules.model.CDVAE
-# hidden_dim: 256
-# latent_dim: 256
-# fc_num_layers: 1 #consider changing 
-# max_atoms: ${data.max_atoms}
-# cost_natom: 1.
-# cost_coord: 1.0
-# cost_type: 17.5
-# cost_lattice: .0075
-# cost_composition: 1.
-# cost_edge: 10.
-# cost_property: 1.
-# beta: 0.0003
-# teacher_forcing_lattice: true
-# teacher_forcing_max_epoch: ${data.teacher_forcing_max_epoch}
-# max_neighbors: 20  # maximum number of neighbors for OTF graph bulding in decoder
-# radius: 7.  # maximum search radius for OTF graph building in decoder
-# sigma_begin: 10.
-# sigma_end: 0.01
-# type_sigma_begin: 5.
-# type_sigma_end: 0.01
-# num_noise_level: 50
-# predict_property: False
-
-# defaults:
-#   - encoder: dimenet
-#   - decoder: gemnet
+  # - optim: adamw  # VAE optimizer
+  # - /optim@diffusion_optim: diffusion  # Use absolute path to optim config

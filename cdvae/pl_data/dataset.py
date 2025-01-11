@@ -10,7 +10,33 @@ from torch_geometric.data import Data
 from cdvae.common.utils import PROJECT_ROOT
 from cdvae.common.data_utils import (
     preprocess, preprocess_tensors, add_scaled_lattice_prop)
+from pathlib import Path
+import pickle
+import pandas as pd
+from torch.utils.data import Dataset
 
+def load_pickle_data(dataset_type):
+    """Load pickle data based on dataset type (train/test/val)"""
+    pickle_path = Path(f"C:/Users/rfrjo/Downloads/CDS/cdvae/mp_20_data/{dataset_type}.pkl")
+    with open(pickle_path, 'rb') as f:
+        return pickle.load(f)
+
+def choose_destination(path):
+    # Extract the filename from path
+    file_name = Path(path).name
+    
+    # Map csv filename to corresponding pickle data
+    if 'train' in file_name:
+        print("Loading training dataset pickle...")
+        return load_pickle_data('train')
+    elif 'test' in file_name:
+        print("Loading testing dataset pickle...")
+        return load_pickle_data('test')
+    elif 'val' in file_name:
+        print("Loading validation dataset pickle...")
+        return load_pickle_data('val')
+    else:
+        raise ValueError(f"Unknown dataset type in filename: {file_name}")
 
 class CrystDataset(Dataset):
     def __init__(self, name: ValueNode, path: ValueNode,
@@ -27,15 +53,10 @@ class CrystDataset(Dataset):
         self.primitive = primitive
         self.graph_method = graph_method
         self.lattice_scale_method = lattice_scale_method
-
-        self.cached_data = preprocess(
-            self.path,
-            preprocess_workers,
-            niggli=self.niggli,
-            primitive=self.primitive,
-            graph_method=self.graph_method,
-            prop_list=[prop])
-
+        
+        # Load the corresponding pickle data based on path
+        self.cached_data = choose_destination(path)
+        
         add_scaled_lattice_prop(self.cached_data, lattice_scale_method)
         self.lattice_scaler = None
         self.scaler = None

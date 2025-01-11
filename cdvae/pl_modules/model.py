@@ -34,15 +34,42 @@ class BaseModule(pl.LightningModule):
         self.save_hyperparameters()
 
     def configure_optimizers(self):
-        opt = hydra.utils.instantiate(
-            self.hparams.optim.optimizer, params=self.parameters(), _convert_="partial"
-        )
-        if not self.hparams.optim.use_lr_scheduler:
-            return [opt]
-        scheduler = hydra.utils.instantiate(
-            self.hparams.optim.lr_scheduler, optimizer=opt
-        )
-        return {"optimizer": opt, "lr_scheduler": scheduler, "monitor": "val_loss"}
+        if self.training_phase == 'vae':
+            optimizer = hydra.utils.instantiate(
+                self.hparams.optim.optimizer, 
+                params=self.parameters()
+            )
+            scheduler = hydra.utils.instantiate(
+                self.hparams.optim.lr_scheduler, 
+                optimizer=optimizer
+            )
+        else:  # diffusion phase
+            # Only optimize diffusion parameters
+            params = self.noise_prediction_network.parameters()
+            optimizer = hydra.utils.instantiate(
+                self.hparams.diffusion_optim.optimizer, 
+                params=params
+            )
+            scheduler = hydra.utils.instantiate(
+                self.hparams.diffusion_optim.lr_scheduler, 
+                optimizer=optimizer
+            )
+        
+        # Add gradient clipping threshold
+        self.grad_clip_val = 1.0
+        
+        # Add gradient norm tracking
+        self.grad_norms = []
+        
+        # Add gradient clipping to the optimizer
+        for param_group in optimizer.param_groups:
+            param_group['clip_grad_norm'] = self.grad_clip_val
+        
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": scheduler,
+            "monitor": "val_loss" if self.training_phase == 'vae' else "val_noise_loss"
+        }
 
 
 class CrystGNN_Supervise(BaseModule):
@@ -137,6 +164,29 @@ class CrystGNN_Supervise(BaseModule):
 class CDVAE(BaseModule):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.training_phase = self.hparams.training_phase
+        
+        if self.training_phase == "diffusion":
+            if not self.hparams.checkpoint_path:
+                raise ValueError("Checkpoint path must be provided for diffusion training")
+            
+            try:
+                checkpoint = torch.load(self.hparams.checkpoint_path)
+                # Let PyTorch handle weight matching
+                missing_keys = self.load_state_dict(checkpoint['state_dict'], strict=False)
+                if missing_keys.missing_keys:
+                    print(f"Warning: Missing keys in state dict: {missing_keys.missing_keys}")
+                
+                # Just freeze non-diffusion parameters
+                for name, param in self.named_parameters():
+                    if not name.startswith('noise_prediction_network'):
+                        param.requires_grad = False
+                        
+                print("Successfully loaded and froze VAE weights")
+                
+            except Exception as e:
+                raise RuntimeError(f"Failed to load VAE weights: {str(e)}")
+
         self.i = 0
         self.encoder = hydra.utils.instantiate(
             self.hparams.encoder, num_targets=self.hparams.latent_dim)
@@ -514,22 +564,43 @@ class CDVAE(BaseModule):
                 'final_coords': noised_coords
             }
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
-        # Get current training phase
-        phase = getattr(self, 'training_phase', 'vae')  # Default to VAE phase
-        
         teacher_forcing = (
             self.current_epoch <= self.hparams.teacher_forcing_max_epoch
-        ) if phase == 'vae' else False
+        ) if self.training_phase == 'vae' else False
         
-        outputs = self(batch, teacher_forcing, training=True, phase=phase)
+        outputs = self(batch, teacher_forcing, training=True, phase=self.training_phase)
         
-        if phase == 'vae':
+        if self.training_phase == 'vae':
             log_dict, loss = self.compute_stats(batch, outputs, prefix='train')
-        else:
+        else:  # diffusion phase
             loss = outputs['noise_loss']
-            log_dict = {'train_noise_loss': loss}
+            log_dict = {
+                'train_noise_loss': loss,
+                'train_noise_loss_a': outputs['noise_loss_a'],
+                'train_noise_loss_x': outputs['noise_loss_x']
+            }
+            
+        # Check for NaN loss
+        if torch.isnan(loss):
+            print("WARNING: NaN loss detected")
+            return None
+            
+        # Log gradients
+        if self.i % 25 == 0:  # Match your existing logging frequency
+            total_norm = 0.0
+            for p in self.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.detach().data.norm(2)
+                    total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** 0.5
+            self.grad_norms.append(total_norm)
+            log_dict['gradient_norm'] = total_norm
+            
+            if total_norm > 100:  # Arbitrary threshold for very large gradients
+                print(f"WARNING: Large gradient norm detected: {total_norm}")
         
         self.log_dict(log_dict, on_step=True, on_epoch=True, prog_bar=True)
+        
         return loss
 
     def generate_rand_init(self, pred_composition_per_atom, pred_lengths,
@@ -667,9 +738,40 @@ class CDVAE(BaseModule):
         return scatter(loss_per_atom, batch.batch, reduce='mean').mean()
 
     def vae_coord_loss(self, pred_cart, batch):
+        # Convert target coordinates
         target_cart_coords = frac_to_cart_coords(batch.frac_coords, batch.lengths, batch.angles, batch.num_atoms)
-        loss = F.mse_loss(pred_cart, target_cart_coords, reduction='none')
-        return loss.mean()
+        
+        # Add checks for numerical stability
+        if torch.isnan(pred_cart).any() or torch.isinf(pred_cart).any():
+            print("WARNING: NaN or Inf detected in predicted coordinates")
+            # Return zero loss but with gradient tracking
+            return torch.tensor(0.0, requires_grad=True, device=pred_cart.device)
+        
+        # Clip extremely large predictions
+        pred_cart_clipped = torch.clamp(pred_cart, min=-1000.0, max=1000.0)
+        
+        # Calculate relative distances to make loss more stable
+        pred_dists = pred_cart_clipped.unsqueeze(1) - pred_cart_clipped.unsqueeze(0)
+        target_dists = target_cart_coords.unsqueeze(1) - target_cart_coords.unsqueeze(0)
+        
+        # Use Huber loss instead of MSE for robustness
+        loss = F.smooth_l1_loss(pred_dists, target_dists, reduction='none')
+        
+        # Add coordinate-wise loss with smaller weight
+        direct_loss = F.smooth_l1_loss(pred_cart_clipped, target_cart_coords, reduction='none')
+        
+        # Combine losses with weighting
+        combined_loss = 0.8 * loss.mean() + 0.2 * direct_loss.mean()
+        
+        # Add stability check
+        if torch.isnan(combined_loss) or torch.isinf(combined_loss) or combined_loss > 1e6:
+            print(f"WARNING: Unstable loss value: {combined_loss}")
+            print(f"Max pred value: {pred_cart.abs().max()}")
+            print(f"Max target value: {target_cart_coords.abs().max()}")
+            return torch.tensor(0.0, requires_grad=True, device=pred_cart.device)
+        
+        return combined_loss
+
     def type_loss(self, pred_atom_types, target_atom_types,
                   used_type_sigmas_per_atom, batch):
         target_atom_types = target_atom_types - 1
@@ -702,14 +804,23 @@ class CDVAE(BaseModule):
     #     return loss
 
     def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
-        outputs = self(batch, teacher_forcing=False, training=False)
-        log_dict, loss = self.compute_stats(batch, outputs, prefix='val')
-        self.log_dict(
-            log_dict,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-        )
+        outputs = self(batch, teacher_forcing=False, training=False, phase=self.training_phase)
+        
+        if self.training_phase == 'vae':
+            log_dict, loss = self.compute_stats(batch, outputs, prefix='val')
+        else:  # diffusion phase
+            loss_a = outputs['noise_loss_a']
+            loss_x = outputs['noise_loss_x']
+            total_loss = loss_a + loss_x
+            
+            log_dict = {
+                'val_noise_loss': total_loss,  # This is what the scheduler monitors
+                'val_noise_loss_a': loss_a,
+                'val_noise_loss_x': loss_x
+            }
+            loss = total_loss
+        
+        self.log_dict(log_dict, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
     def test_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
@@ -837,6 +948,10 @@ class CDVAE(BaseModule):
             })
 
         return log_dict, loss
+
+    def on_before_optimizer_step(self, optimizer):
+        # Clip gradients
+        torch.nn.utils.clip_grad_norm_(self.parameters(), self.grad_clip_val)
 
 
 @hydra.main(config_path=str(PROJECT_ROOT / "conf"), config_name="default")
