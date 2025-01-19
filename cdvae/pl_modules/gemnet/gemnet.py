@@ -108,7 +108,7 @@ class GemNetT(torch.nn.Module):
         num_spherical: int = 7,
         num_radial: int = 128,
         num_blocks: int = 3,
-        emb_size_atom: int = 512,
+        emb_size_atom: int = 256,
         emb_size_edge: int = 512,
         emb_size_trip: int = 64,
         emb_size_rbf: int = 16,
@@ -195,7 +195,7 @@ class GemNetT(torch.nn.Module):
         ### ------------------------------------------------------------------------------------- ###
 
         # Embedding block
-        self.atom_emb = build_mlp(64, 420, 5+2, emb_size_atom)
+        self.atom_emb = build_mlp(256, 420, 5+2, emb_size_atom)
         self.atom_latent_emb = nn.Linear(emb_size_atom + latent_dim, emb_size_atom)
         self.edge_emb = EdgeEmbedding(
             emb_size_atom, num_radial, emb_size_edge, activation=activation

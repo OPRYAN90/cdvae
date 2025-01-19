@@ -1,5 +1,5 @@
 _target_: cdvae.pl_modules.decoderdenoiser.GemNetTDenoiserDecoder
-hidden_dim: 64
+hidden_dim: 256
 latent_dim: ${model.latent_dim}  # Reference the main model's latent_dim
 max_neighbors: 20
 radius: 6.0

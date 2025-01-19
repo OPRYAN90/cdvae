@@ -52,7 +52,7 @@ class BaseModule(pl.LightningModule):
             if loaded_state_dict[k].shape != model_state_dict[k].shape:
                 print(f"[on_load_checkpoint] Removing mismatched param: {k} "
                     f"loaded {loaded_state_dict[k].shape} vs. new {model_state_dict[k].shape}")
-                del loaded_state_dict[k]  # remove it so it won’t break strict load
+                del loaded_state_dict[k]  # remove it so it won't break strict load
                 mismatch_keys.append(k)
 
         # Now store the pruned state_dict back into the checkpoint 
@@ -214,7 +214,7 @@ class CDVAE(BaseModule):
         self.fc_lattice = build_mlp(self.hparams.latent_dim, self.hparams.hidden_dim,
                                     self.hparams.fc_num_layers, 6) #change
         self.fc_composition = build_mlp(self.hparams.latent_dim, self.hparams.hidden_dim,
-                                        self.hparams.fc_num_layers, 64)
+                                        self.hparams.fc_num_layers, 256)
         self.fc_frac_coords = build_mlp(self.hparams.latent_dim, self.hparams.hidden_dim,
                                         self.hparams.fc_num_layers+4, 3)
         # for property prediction.
@@ -535,7 +535,7 @@ class CDVAE(BaseModule):
             
             # 3. Initialize noised composition and coordinates
             total_atoms = num_atoms_per_crystal.sum()
-            noised_composition = torch.randn(total_atoms, 64, device=device)
+            noised_composition = torch.randn(total_atoms, 256, device=device)
             noised_coords = torch.randn(total_atoms, 3, device=device)
             
             # 4. Iterative denoising

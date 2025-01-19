@@ -157,7 +157,7 @@ class GemNetTDenoiser(torch.nn.Module):
         num_spherical: int = 7,
         num_radial: int = 128,
         num_blocks: int = 3,
-        emb_size_atom: int = 512,
+        emb_size_atom: int = 256,
         emb_size_edge: int = 512,
         emb_size_trip: int = 64,
         emb_size_rbf: int = 16,
@@ -167,7 +167,7 @@ class GemNetTDenoiser(torch.nn.Module):
         num_after_skip: int = 2,
         num_concat: int = 1,
         num_atom: int = 3,
-        time_embed_dim: int = 64, #changed
+        time_embed_dim: int = 256,
         regress_forces: bool = True,
         cutoff: float = 6.0,
         max_neighbors: int = 50,
@@ -247,7 +247,7 @@ class GemNetTDenoiser(torch.nn.Module):
         self.time_embedding = LearnableTimeEmbedding(time_embed_dim)
 
         # Embedding block
-        self.atom_emb = build_mlp(64, 420, 5+2, emb_size_atom)
+        self.atom_emb = build_mlp(256, 420, 5+2, emb_size_atom)
         self.atom_latent_emb = nn.Linear(emb_size_atom + latent_dim, emb_size_atom)
         self.edge_emb = EdgeEmbedding(
             emb_size_atom, num_radial, emb_size_edge, activation=activation
