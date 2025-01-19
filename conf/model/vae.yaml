@@ -30,3 +30,4 @@ defaults:
   - noise_prediction_network: denoiser
   # - optim: adamw  # VAE optimizer
   # - /optim@diffusion_optim: diffusion  # Use absolute path to optim config
+  - /optim@diffusion_optim: diffusion

@@ -17,7 +17,7 @@ from torch.utils.data import Dataset
 
 def load_pickle_data(dataset_type):
     """Load pickle data based on dataset type (train/test/val)"""
-    pickle_path = Path(f"C:/Users/rfrjo/Downloads/CDS/cdvae/mp_20_data/{dataset_type}.pkl")
+    pickle_path = Path(f"/teamspace/studios/this_studio/cdvae/mp_20_data/{dataset_type}.pkl")
     with open(pickle_path, 'rb') as f:
         return pickle.load(f)
 

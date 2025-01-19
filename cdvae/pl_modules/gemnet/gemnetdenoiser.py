@@ -167,7 +167,7 @@ class GemNetTDenoiser(torch.nn.Module):
         num_after_skip: int = 2,
         num_concat: int = 1,
         num_atom: int = 3,
-        time_embed_dim: int = 256,
+        time_embed_dim: int = 64, #changed
         regress_forces: bool = True,
         cutoff: float = 6.0,
         max_neighbors: int = 50,

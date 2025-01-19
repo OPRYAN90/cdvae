@@ -33,6 +33,34 @@ class BaseModule(pl.LightningModule):
         # populate self.hparams with args and kwargs automagically!
         self.save_hyperparameters()
 
+    def on_load_checkpoint(self, checkpoint: dict) -> None:
+        """
+        Called automatically by PL when loading a checkpoint. 
+        We can remove or slice keys in 'checkpoint["state_dict"]' 
+        to fix shape mismatches.
+        """
+        # If we've got logic here already, we can keep it, but let's do the mismatch fix first:
+        loaded_state_dict = checkpoint["state_dict"]
+        model_state_dict = self.state_dict()  # current (new) model's state_dict
+
+        # Loop over loaded weights, check shape mismatch
+        mismatch_keys = []
+        for k in list(loaded_state_dict.keys()):
+            if k not in model_state_dict:
+                # Key doesn't exist in this model at all — can remove if you want
+                continue
+            if loaded_state_dict[k].shape != model_state_dict[k].shape:
+                print(f"[on_load_checkpoint] Removing mismatched param: {k} "
+                    f"loaded {loaded_state_dict[k].shape} vs. new {model_state_dict[k].shape}")
+                del loaded_state_dict[k]  # remove it so it won’t break strict load
+                mismatch_keys.append(k)
+
+        # Now store the pruned state_dict back into the checkpoint 
+        # so that the actual load_state_dict(...) won't see these mismatch keys.
+        checkpoint["state_dict"] = loaded_state_dict
+        # Finally let the normal PL logic proceed
+        super().on_load_checkpoint(checkpoint)
+
     def configure_optimizers(self):
         if self.training_phase == 'vae':
             optimizer = hydra.utils.instantiate(
@@ -165,29 +193,8 @@ class CDVAE(BaseModule):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.training_phase = self.hparams.training_phase
-        
-        if self.training_phase == "diffusion":
-            if not self.hparams.checkpoint_path:
-                raise ValueError("Checkpoint path must be provided for diffusion training")
-            
-            try:
-                checkpoint = torch.load(self.hparams.checkpoint_path)
-                # Let PyTorch handle weight matching
-                missing_keys = self.load_state_dict(checkpoint['state_dict'], strict=False)
-                if missing_keys.missing_keys:
-                    print(f"Warning: Missing keys in state dict: {missing_keys.missing_keys}")
-                
-                # Just freeze non-diffusion parameters
-                for name, param in self.named_parameters():
-                    if not name.startswith('noise_prediction_network'):
-                        param.requires_grad = False
-                        
-                print("Successfully loaded and froze VAE weights")
-                
-            except Exception as e:
-                raise RuntimeError(f"Failed to load VAE weights: {str(e)}")
-
         self.i = 0
+        # Initialize all components
         self.encoder = hydra.utils.instantiate(
             self.hparams.encoder, num_targets=self.hparams.latent_dim)
         self.decoder = hydra.utils.instantiate(self.hparams.decoder)
@@ -237,6 +244,30 @@ class CDVAE(BaseModule):
         # obtain from datamodule.
         self.lattice_scaler = None
         self.scaler = None
+
+        if self.training_phase == "diffusion":
+            # First print all parameters
+            print("\nBefore freezing - trainable parameters:")
+            for name, param in self.named_parameters():
+                print(f"{name}: {param.requires_grad}")
+
+            # Explicitly freeze specific components
+            for name, param in self.named_parameters():
+                if not name.startswith('noise_prediction_network'):
+                    param.requires_grad = False
+                else:
+                    param.requires_grad = True  # Explicitly ensure noise prediction params are trainable
+            
+            # Verify after freezing
+            print("\nAfter freezing - trainable parameters:")
+            trainable_params = 0
+            for name, param in self.named_parameters():
+                is_trainable = param.requires_grad
+                print(f"{name}: {is_trainable}")
+                if is_trainable:
+                    trainable_params += param.numel()
+            
+            print(f"\nNumber of trainable parameters: {trainable_params}")
 
     def reparameterize(self, mu, logvar):
         """
@@ -437,7 +468,7 @@ class CDVAE(BaseModule):
             timesteps = weighting * 100  # Scale to [0,100]
             
             # Add noise to composition and coordinates
-            sigma_a = weighting[:, None]  # [B, 1]
+            sigma_a = weighting.repeat_interleave(batch.num_atoms, dim=0)[:, None]  # [sum(N_atoms), 1]
             sigma_x = weighting.repeat_interleave(batch.num_atoms, dim=0)[:, None]  # [sum(N_atoms), 1]
             
             noise_a = torch.randn_like(z_a)
@@ -459,7 +490,7 @@ class CDVAE(BaseModule):
                 timesteps=timesteps #int
                 )
             # Compute losses
-            loss_a = F.mse_loss(pred_noise_a, noise_a)
+            loss_a = 2.4 * F.mse_loss(pred_noise_a, noise_a)
             loss_x = F.mse_loss(pred_noise_x, noise_x)
             
             total_loss = loss_a + loss_x

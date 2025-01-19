@@ -1,9 +1,9 @@
 optimizer:
-  _target_: torch.optim.AdamW
-  lr: 0.0001
+  _target_: torch.optim.AdamW #changed
+  lr: 0.001
   weight_decay: 0.0
 use_lr_scheduler: True
 lr_scheduler:
   _target_: torch.optim.lr_scheduler.CosineAnnealingLR
   T_max: 100000
-  eta_min: 1e-6 
+  eta_min: 1e-6 @

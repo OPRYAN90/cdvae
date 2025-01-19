@@ -27,6 +27,7 @@ from pytorch_lightning.callbacks import (
 from pytorch_lightning.loggers import WandbLogger
 from cdvae.common.utils import log_hyperparameters, PROJECT_ROOT
 
+
 def build_callbacks(cfg: DictConfig) -> List[Callback]:
     callbacks: List[Callback] = []
 
@@ -113,6 +114,7 @@ def run(cfg: DictConfig) -> None:
     model.scaler = datamodule.scaler.copy()
     torch.save(datamodule.lattice_scaler, hydra_dir / 'lattice_scaler.pt')
     torch.save(datamodule.scaler, hydra_dir / 'prop_scaler.pt')
+
     # Instantiate the callbacks
     callbacks: List[Callback] = build_callbacks(cfg=cfg)
 
@@ -125,7 +127,7 @@ def run(cfg: DictConfig) -> None:
             **wandb_config,
             tags=cfg.core.tags,
         )
-        hydra.utils.log.info("W&B is now watching <{cfg.logging.wandb_watch.log}>!")
+        hydra.utils.log.info(f"W&B is now watching <{cfg.logging.wandb_watch.log}>!")
         wandb_logger.watch(
             model,
             log=cfg.logging.wandb_watch.log,
@@ -136,15 +138,38 @@ def run(cfg: DictConfig) -> None:
     yaml_conf: str = OmegaConf.to_yaml(cfg=cfg)
     (hydra_dir / "hparams.yaml").write_text(yaml_conf)
 
-    # Load checkpoint (if exist)
+    # Find checkpoint(s)
     ckpts = list(hydra_dir.glob('*.ckpt'))
     if len(ckpts) > 0:
-        ckpt_epochs = np.array([int(ckpt.parts[-1].split('-')[0].split('=')[1]) for ckpt in ckpts])
-        ckpt = str(ckpts[ckpt_epochs.argsort()[-1]])
-        hydra.utils.log.info(f"found checkpoint: {ckpt}")
+        # Pick the latest or best checkpoint
+        ckpt_epochs = np.array([int(ck.parts[-1].split('-')[0].split('=')[1]) for ck in ckpts])
+        best_ckpt = str(ckpts[ckpt_epochs.argsort()[-1]])
+        hydra.utils.log.info(f"Found checkpoint: {best_ckpt}")
+
+        # --- Manual partial load: remove mismatched keys, then load state ---
+        loaded_data = torch.load(best_ckpt, map_location="cpu")
+        ckpt_dict = loaded_data["state_dict"]
+
+        # Compare shapes in checkpoint vs. shapes in current model
+        model_dict = model.state_dict()
+        for k in list(ckpt_dict.keys()):
+            if k not in model_dict:
+                # Key doesn't exist in the new model at all
+                print(f"[Shape Fix] Removing key not in model: {k}")
+                del ckpt_dict[k]
+            else:
+                # If shape mismatches, remove
+                if ckpt_dict[k].shape != model_dict[k].shape:
+                    print(f"[Shape Fix] Removing mismatched key: {k} "
+                          f"(ckpt shape {ckpt_dict[k].shape} vs model shape {model_dict[k].shape})")
+                    del ckpt_dict[k]
+
+        missing = model.load_state_dict(ckpt_dict, strict=False)
+        hydra.utils.log.info(f"Partial load done. Missing/Unexpected keys:\n{missing}")
     else:
-        ckpt = None
-          
+        best_ckpt = None
+
+    # Create the Trainer WITHOUT resume_from_checkpoint
     hydra.utils.log.info("Instantiating the Trainer")
     trainer = pl.Trainer(
         default_root_dir=hydra_dir,
@@ -153,9 +178,11 @@ def run(cfg: DictConfig) -> None:
         deterministic=cfg.train.deterministic,
         check_val_every_n_epoch=cfg.logging.val_check_interval,
         progress_bar_refresh_rate=cfg.logging.progress_bar_refresh_rate,
-        resume_from_checkpoint=ckpt,
+        # NOTE: no 'resume_from_checkpoint' is passed here!
         **cfg.train.pl_trainer,
     )
+
+    # Log hyperparameters
     log_hyperparameters(trainer=trainer, model=model, cfg=cfg)
 
     hydra.utils.log.info("Starting training!")

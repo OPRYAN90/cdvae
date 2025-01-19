@@ -216,3 +216,6 @@ fabric.properties
 
 # .DS_Store
 .DS_Store
+mp_20_data/train.pkl
+mp_20_data/epoch=49-step=10599.ckpt
+singlerun/2025-01-15/mp_20/epoch=49-step=10599.ckpt
